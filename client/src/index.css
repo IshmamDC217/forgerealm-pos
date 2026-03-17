@@ -1,0 +1,80 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    @apply bg-navy text-gray-100 font-sans antialiased;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  input, textarea, select {
+    @apply bg-card border border-gray-600 text-gray-100 rounded-lg px-3 py-2
+           focus:outline-none focus:ring-2 focus:ring-gold focus:border-transparent
+           placeholder-gray-500;
+  }
+
+  button {
+    @apply transition-all duration-150 active:scale-95;
+  }
+}
+
+@layer components {
+  .btn-gold {
+    @apply bg-gold text-navy font-semibold px-4 py-3 rounded-lg
+           hover:bg-gold-light active:bg-gold-dark
+           transition-colors duration-150;
+  }
+
+  .btn-outline {
+    @apply border border-gray-600 text-gray-300 px-4 py-3 rounded-lg
+           hover:border-gold hover:text-gold
+           transition-colors duration-150;
+  }
+
+  .card {
+    @apply bg-card rounded-xl p-4 border border-gray-700/50;
+  }
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: #0a1628;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #374151;
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #4b5563;
+}
+
+/* Number input hide arrows */
+input[type='number']::-webkit-inner-spin-button,
+input[type='number']::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+input[type='number'] {
+  -moz-appearance: textfield;
+}
+
+/* Smooth page transitions */
+.page-enter {
+  opacity: 0;
+  transform: translateY(8px);
+}
+
+.page-enter-active {
+  opacity: 1;
+  transform: translateY(0);
+  transition: opacity 200ms ease-out, transform 200ms ease-out;
+}
