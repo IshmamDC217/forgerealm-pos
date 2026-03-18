@@ -9,10 +9,11 @@
   }
 
   input, textarea, select {
-    @apply text-gray-100 rounded-xl px-3.5 py-2.5 placeholder-gray-500 transition-all duration-200;
+    @apply text-gray-100 rounded-xl px-3.5 py-2.5 placeholder-gray-500 transition-all duration-200 box-border;
     background: rgba(255, 255, 255, 0.05);
     border: 1px solid rgba(255, 255, 255, 0.1);
     backdrop-filter: blur(4px);
+    max-width: 100%;
   }
 
   input:focus, textarea:focus, select:focus {
@@ -136,6 +137,23 @@
 
 ::-webkit-scrollbar-thumb:hover {
   background: rgba(255, 255, 255, 0.2);
+}
+
+/* Date input styling */
+input[type='date'] {
+  -webkit-appearance: none;
+  appearance: none;
+  color-scheme: dark;
+}
+
+input[type='date']::-webkit-calendar-picker-indicator {
+  filter: invert(0.7) sepia(1) saturate(3) hue-rotate(10deg);
+  cursor: pointer;
+  opacity: 0.6;
+}
+
+input[type='date']::-webkit-calendar-picker-indicator:hover {
+  opacity: 1;
 }
 
 /* Number input hide arrows */
