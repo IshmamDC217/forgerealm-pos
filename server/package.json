@@ -28,7 +28,6 @@
     "@types/node": "^25.5.0",
     "@types/pg": "^8.18.0",
     "nodemon": "^3.1.9",
-    "tsx": "^4.21.0",
     "typescript": "^5.9.3"
   },
   "author": "Ishmam Ahmed",
