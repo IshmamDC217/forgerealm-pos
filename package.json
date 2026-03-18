@@ -12,7 +12,8 @@
     "postinstall": "cd server && npm install && cd ../client && npm install",
     "install:all": "npm install && cd server && npm install && cd ../client && npm install",
     "migrate": "cd server && npm run migrate",
-    "seed": "cd server && npm run seed"
+    "seed": "cd server && npm run seed",
+    "create-user": "cd server && npm run create-user"
   },
   "devDependencies": {
     "concurrently": "^9.1.2"

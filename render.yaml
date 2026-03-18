@@ -3,10 +3,16 @@ services:
     name: forgerealm-pos
     plan: free
     runtime: node
-    buildCommand: npm run install:all && npm run build
+    buildCommand: npm run install:all && npm run build && npm run migrate && npm run create-user
     startCommand: npm start
     envVars:
       - key: DATABASE_URL
         sync: false
       - key: NODE_ENV
         value: production
+      - key: JWT_SECRET
+        sync: false
+      - key: POS_ADMIN_USER
+        sync: false
+      - key: POS_ADMIN_PASS
+        sync: false

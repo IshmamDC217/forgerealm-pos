@@ -2,8 +2,8 @@ import 'dotenv/config';
 import bcrypt from 'bcrypt';
 import { pool } from './index';
 
-const USERNAME = process.argv[2] || 'admin';
-const PASSWORD = process.argv[3] || 'forgerealm';
+const USERNAME = process.argv[2] || process.env.POS_ADMIN_USER || 'admin';
+const PASSWORD = process.argv[3] || process.env.POS_ADMIN_PASS || 'forgerealm';
 
 async function createUser(): Promise<void> {
   const client = await pool.connect();
