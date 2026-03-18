@@ -1,27 +1,39 @@
-const express = require('express');
-const router = express.Router();
-const ExcelJS = require('exceljs');
-const db = require('../db');
+import { Router, Request, Response } from 'express';
+import ExcelJS from 'exceljs';
+import { query } from '../db';
+import { Session, ProductSummary } from '../types';
 
-// GET /:sessionId — export session data as XLSX
-router.get('/:sessionId', async (req, res) => {
+interface SaleRow {
+  quantity: number;
+  price_charged: string;
+  payment_method: string;
+  timestamp: string;
+  product_name: string;
+  category: string | null;
+}
+
+const router = Router();
+
+// GET /:sessionId — export session data as XLSX or CSV
+router.get('/:sessionId', async (req: Request, res: Response) => {
   try {
     const { sessionId } = req.params;
-    const format = req.query.format || 'xlsx';
+    const format = (req.query.format as string) || 'xlsx';
 
     // Fetch session
-    const sessionResult = await db.query(
+    const sessionResult = await query<Session>(
       'SELECT * FROM sessions WHERE id = $1',
       [sessionId]
     );
     if (sessionResult.rows.length === 0) {
-      return res.status(404).json({ error: 'Session not found' });
+      res.status(404).json({ error: 'Session not found' });
+      return;
     }
     const session = sessionResult.rows[0];
 
     // Fetch sales with product info
-    const salesResult = await db.query(
-      `SELECT sa.quantity, sa.price_charged, sa.timestamp,
+    const salesResult = await query<SaleRow>(
+      `SELECT sa.quantity, sa.price_charged, sa.payment_method, sa.timestamp,
               p.name AS product_name, p.category
        FROM sales sa
        JOIN products p ON p.id = sa.product_id
@@ -32,7 +44,7 @@ router.get('/:sessionId', async (req, res) => {
     const sales = salesResult.rows;
 
     // Fetch per-product summary
-    const summaryResult = await db.query(
+    const summaryResult = await query<ProductSummary>(
       `SELECT p.name AS product_name, p.category,
               SUM(sa.quantity) AS total_units,
               SUM(sa.quantity * sa.price_charged) AS total_revenue,
@@ -56,8 +68,13 @@ router.get('/:sessionId', async (req, res) => {
   }
 });
 
-async function exportCSV(res, session, sales, summary) {
-  const lines = [];
+async function exportCSV(
+  res: Response,
+  session: Session,
+  sales: SaleRow[],
+  summary: ProductSummary[]
+): Promise<void> {
+  const lines: string[] = [];
   const sessionDate = new Date(session.date).toLocaleDateString('en-GB');
 
   lines.push(`ForgeRealm POS - Sales Report`);
@@ -75,18 +92,37 @@ async function exportCSV(res, session, sales, summary) {
     const revenue = parseFloat(row.total_revenue);
     grandTotal += revenue;
     grandUnits += parseInt(row.total_units);
-    lines.push(`"${row.product_name}","${row.category || ''}",${row.total_units},${parseFloat(row.avg_price).toFixed(2)},${revenue.toFixed(2)}`);
+    lines.push(`"${row.product_name}","${row.category || ''}",${row.total_units},\u00a3${parseFloat(row.avg_price).toFixed(2)},\u00a3${revenue.toFixed(2)}`);
   }
-  lines.push(`TOTAL,,${grandUnits},,${grandTotal.toFixed(2)}`);
+  lines.push(`TOTAL,,${grandUnits},,\u00a3${grandTotal.toFixed(2)}`);
+
+  if (session.card_fee_applied) {
+    const feeRate = parseFloat(String(session.card_fee_rate)) || 1.69;
+    let cardRevenue = 0;
+    for (const sale of sales) {
+      if (sale.payment_method === 'card') {
+        cardRevenue += sale.quantity * parseFloat(sale.price_charged);
+      }
+    }
+    const totalFees = cardRevenue * (feeRate / 100);
+    const netRevenue = grandTotal - totalFees;
+    lines.push('');
+    lines.push('--- Card Fee Summary ---');
+    lines.push(`Card Fee Rate,${feeRate}%`);
+    lines.push(`Card Revenue,\u00a3${cardRevenue.toFixed(2)}`);
+    lines.push(`Total Card Fees,\u00a3${totalFees.toFixed(2)}`);
+    lines.push(`Net Revenue (after fees),\u00a3${netRevenue.toFixed(2)}`);
+  }
+
   lines.push('');
 
   // Individual sales
   lines.push('--- Individual Sales ---');
-  lines.push('Time,Product,Category,Quantity,Price Charged,Line Total');
+  lines.push('Time,Product,Category,Quantity,Price Charged,Line Total,Payment');
   for (const sale of sales) {
     const time = new Date(sale.timestamp).toLocaleTimeString('en-GB');
     const lineTotal = (sale.quantity * parseFloat(sale.price_charged)).toFixed(2);
-    lines.push(`${time},"${sale.product_name}","${sale.category || ''}",${sale.quantity},${parseFloat(sale.price_charged).toFixed(2)},${lineTotal}`);
+    lines.push(`${time},"${sale.product_name}","${sale.category || ''}",${sale.quantity},\u00a3${parseFloat(sale.price_charged).toFixed(2)},\u00a3${lineTotal},${sale.payment_method}`);
   }
 
   const filename = `ForgeRealm_${session.name.replace(/[^a-zA-Z0-9]/g, '_')}_${sessionDate.replace(/\//g, '-')}.csv`;
@@ -95,7 +131,12 @@ async function exportCSV(res, session, sales, summary) {
   res.send(lines.join('\n'));
 }
 
-async function exportXLSX(res, session, sales, summary) {
+async function exportXLSX(
+  res: Response,
+  session: Session,
+  sales: SaleRow[],
+  summary: ProductSummary[]
+): Promise<void> {
   const workbook = new ExcelJS.Workbook();
   workbook.creator = 'ForgeRealm POS';
   workbook.created = new Date();
@@ -185,7 +226,7 @@ async function exportXLSX(res, session, sales, summary) {
     const revenue = parseFloat(row.total_revenue);
     const bgColor = i % 2 === 0 ? lightGold : lightGray;
 
-    const values = [
+    const values: (string | number)[] = [
       row.product_name,
       row.category || '',
       parseInt(row.total_units),
@@ -201,25 +242,69 @@ async function exportXLSX(res, session, sales, summary) {
       cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: bgColor.replace('#', '') } };
       cell.alignment = { horizontal: j < 2 ? 'left' : 'center', vertical: 'middle' };
 
-      if (j === 3 || j === 4) cell.numFmt = '"$"#,##0.00';
+      if (j === 3 || j === 4) cell.numFmt = '"£"#,##0.00';
       if (j === 5) cell.numFmt = '0.0%';
     });
   });
 
   // Totals row
   const totalsRow = headerRow + 1 + summary.length;
-  const totalsData = ['TOTAL', '', grandUnits, '', grandTotal, '100%'];
+  const totalsData: (string | number)[] = ['TOTAL', '', grandUnits, '', grandTotal, '100%'];
   totalsData.forEach((v, j) => {
     const cell = summarySheet.getCell(totalsRow, j + 1);
     cell.value = v === '100%' ? 1 : v;
     cell.font = { name: 'Arial', size: 11, bold: true, color: { argb: navy } };
     cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: gold } };
     cell.alignment = { horizontal: j < 2 ? 'left' : 'center', vertical: 'middle' };
-    if (j === 4) cell.numFmt = '"$"#,##0.00';
+    if (j === 4) cell.numFmt = '"£"#,##0.00';
     if (j === 5) cell.numFmt = '0.0%';
     cell.border = { top: { style: 'medium', color: { argb: navy } } };
   });
   summarySheet.getRow(totalsRow).height = 28;
+
+  // Card fee section
+  if (session.card_fee_applied) {
+    const feeRate = parseFloat(String(session.card_fee_rate)) || 1.69;
+    let cardRevenue = 0;
+    for (const sale of sales) {
+      if (sale.payment_method === 'card') {
+        cardRevenue += sale.quantity * parseFloat(sale.price_charged);
+      }
+    }
+    const totalFees = cardRevenue * (feeRate / 100);
+    const netRevenue = grandTotal - totalFees;
+
+    const feeStart = totalsRow + 2;
+    summarySheet.mergeCells(`A${feeStart}:F${feeStart}`);
+    const feeTitle = summarySheet.getCell(`A${feeStart}`);
+    feeTitle.value = 'Card Fee Summary (SumUp)';
+    feeTitle.font = { name: 'Arial', size: 12, bold: true, color: { argb: navy } };
+    feeTitle.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: gold } };
+    feeTitle.alignment = { horizontal: 'center', vertical: 'middle' };
+    summarySheet.getRow(feeStart).height = 28;
+
+    const feeRows = [
+      ['Card Fee Rate', `${feeRate}%`],
+      ['Card Revenue (gross)', cardRevenue],
+      ['Total Card Fees', totalFees],
+      ['Net Revenue (after fees)', netRevenue],
+    ];
+
+    feeRows.forEach(([label, value], i) => {
+      const r = feeStart + 1 + i;
+      const bgColor = i % 2 === 0 ? lightGold : lightGray;
+      const labelCell = summarySheet.getCell(`A${r}`);
+      labelCell.value = label;
+      labelCell.font = { name: 'Arial', size: 10, bold: i === 3, color: i === 3 ? { argb: navy } : undefined };
+      labelCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: bgColor.replace('#', '') } };
+
+      const valCell = summarySheet.getCell(`B${r}`);
+      valCell.value = value;
+      valCell.font = { name: 'Arial', size: 10, bold: i === 3, color: i === 2 ? { argb: 'CC0000' } : i === 3 ? { argb: navy } : undefined };
+      valCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: bgColor.replace('#', '') } };
+      if (typeof value === 'number') valCell.numFmt = '"£"#,##0.00';
+    });
+  }
 
   // Column widths
   summarySheet.columns = [
@@ -231,7 +316,7 @@ async function exportXLSX(res, session, sales, summary) {
     properties: { tabColor: { argb: navy } },
   });
 
-  detailSheet.mergeCells('A1:F1');
+  detailSheet.mergeCells('A1:G1');
   const detailTitle = detailSheet.getCell('A1');
   detailTitle.value = `${session.name} - Individual Sales`;
   detailTitle.font = { name: 'Arial', size: 16, bold: true, color: { argb: gold } };
@@ -239,7 +324,7 @@ async function exportXLSX(res, session, sales, summary) {
   detailTitle.alignment = { horizontal: 'center', vertical: 'middle' };
   detailSheet.getRow(1).height = 35;
 
-  const detailHeaders = ['Time', 'Product', 'Category', 'Qty', 'Price', 'Line Total'];
+  const detailHeaders = ['Time', 'Product', 'Category', 'Qty', 'Price', 'Line Total', 'Payment'];
   detailHeaders.forEach((h, i) => {
     const cell = detailSheet.getCell(2, i + 1);
     cell.value = h;
@@ -255,19 +340,19 @@ async function exportXLSX(res, session, sales, summary) {
     const lineTotal = sale.quantity * parseFloat(sale.price_charged);
     const time = new Date(sale.timestamp).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
 
-    const values = [time, sale.product_name, sale.category || '', sale.quantity, parseFloat(sale.price_charged), lineTotal];
+    const values: (string | number)[] = [time, sale.product_name, sale.category || '', sale.quantity, parseFloat(sale.price_charged), lineTotal, sale.payment_method.toUpperCase()];
     values.forEach((v, j) => {
       const cell = detailSheet.getCell(r, j + 1);
       cell.value = v;
       cell.font = { name: 'Arial', size: 10 };
       cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: bgColor.replace('#', '') } };
       cell.alignment = { horizontal: j < 3 ? 'left' : 'center', vertical: 'middle' };
-      if (j === 4 || j === 5) cell.numFmt = '"$"#,##0.00';
+      if (j === 4 || j === 5) cell.numFmt = '"£"#,##0.00';
     });
   });
 
   detailSheet.columns = [
-    { width: 10 }, { width: 22 }, { width: 14 }, { width: 8 }, { width: 12 }, { width: 14 },
+    { width: 10 }, { width: 22 }, { width: 14 }, { width: 8 }, { width: 12 }, { width: 14 }, { width: 10 },
   ];
 
   // Generate buffer and send
@@ -279,4 +364,4 @@ async function exportXLSX(res, session, sales, summary) {
   res.send(buffer);
 }
 
-module.exports = router;
+export default router;

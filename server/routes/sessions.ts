@@ -1,11 +1,12 @@
-const express = require('express');
-const router = express.Router();
-const db = require('../db');
+import { Router, Request, Response } from 'express';
+import { query } from '../db';
+
+const router = Router();
 
 // GET / — list all sessions (newest first)
-router.get('/', async (req, res) => {
+router.get('/', async (_req: Request, res: Response) => {
   try {
-    const result = await db.query(
+    const result = await query(
       `SELECT s.*,
         COALESCE(SUM(sa.quantity * sa.price_charged), 0) AS total_revenue,
         COALESCE(SUM(sa.quantity), 0) AS total_units
@@ -22,13 +23,14 @@ router.get('/', async (req, res) => {
 });
 
 // POST / — create session
-router.post('/', async (req, res) => {
+router.post('/', async (req: Request, res: Response) => {
   try {
     const { name, location, date, notes } = req.body;
     if (!name) {
-      return res.status(400).json({ error: 'Session name is required' });
+      res.status(400).json({ error: 'Session name is required' });
+      return;
     }
-    const result = await db.query(
+    const result = await query(
       `INSERT INTO sessions (name, location, date, notes)
        VALUES ($1, $2, $3, $4)
        RETURNING *`,
@@ -42,18 +44,19 @@ router.post('/', async (req, res) => {
 });
 
 // GET /:id — get session with sales summary stats
-router.get('/:id', async (req, res) => {
+router.get('/:id', async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-    const sessionResult = await db.query(
+    const sessionResult = await query(
       'SELECT * FROM sessions WHERE id = $1',
       [id]
     );
     if (sessionResult.rows.length === 0) {
-      return res.status(404).json({ error: 'Session not found' });
+      res.status(404).json({ error: 'Session not found' });
+      return;
     }
 
-    const statsResult = await db.query(
+    const statsResult = await query(
       `SELECT
         COALESCE(SUM(sa.quantity * sa.price_charged), 0) AS total_revenue,
         COALESCE(SUM(sa.quantity), 0) AS total_units,
@@ -63,7 +66,7 @@ router.get('/:id', async (req, res) => {
       [id]
     );
 
-    const bestSellerResult = await db.query(
+    const bestSellerResult = await query(
       `SELECT p.name, SUM(sa.quantity) AS units_sold
        FROM sales sa
        JOIN products p ON p.id = sa.product_id
@@ -76,14 +79,17 @@ router.get('/:id', async (req, res) => {
 
     const session = sessionResult.rows[0];
     const stats = statsResult.rows[0];
-    session.stats = {
-      total_revenue: parseFloat(stats.total_revenue),
-      total_units: parseInt(stats.total_units),
-      total_sales: parseInt(stats.total_sales),
-      best_seller: bestSellerResult.rows[0]?.name || null,
+    const sessionWithStats = {
+      ...session,
+      stats: {
+        total_revenue: parseFloat(stats.total_revenue),
+        total_units: parseInt(stats.total_units),
+        total_sales: parseInt(stats.total_sales),
+        best_seller: bestSellerResult.rows[0]?.name || null,
+      },
     };
 
-    res.json(session);
+    res.json(sessionWithStats);
   } catch (err) {
     console.error('Error fetching session:', err);
     res.status(500).json({ error: 'Failed to fetch session' });
@@ -91,34 +97,38 @@ router.get('/:id', async (req, res) => {
 });
 
 // PATCH /:id — update session
-router.patch('/:id', async (req, res) => {
+router.patch('/:id', async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-    const { name, location, notes, status } = req.body;
+    const { name, location, notes, status, card_fee_applied, card_fee_rate } = req.body;
 
-    const fields = [];
-    const values = [];
+    const fields: string[] = [];
+    const values: unknown[] = [];
     let idx = 1;
 
     if (name !== undefined) { fields.push(`name = $${idx++}`); values.push(name); }
     if (location !== undefined) { fields.push(`location = $${idx++}`); values.push(location); }
     if (notes !== undefined) { fields.push(`notes = $${idx++}`); values.push(notes); }
     if (status !== undefined) { fields.push(`status = $${idx++}`); values.push(status); }
+    if (card_fee_applied !== undefined) { fields.push(`card_fee_applied = $${idx++}`); values.push(card_fee_applied); }
+    if (card_fee_rate !== undefined) { fields.push(`card_fee_rate = $${idx++}`); values.push(card_fee_rate); }
 
     if (fields.length === 0) {
-      return res.status(400).json({ error: 'No fields to update' });
+      res.status(400).json({ error: 'No fields to update' });
+      return;
     }
 
     fields.push(`updated_at = NOW()`);
     values.push(id);
 
-    const result = await db.query(
+    const result = await query(
       `UPDATE sessions SET ${fields.join(', ')} WHERE id = $${idx} RETURNING *`,
       values
     );
 
     if (result.rows.length === 0) {
-      return res.status(404).json({ error: 'Session not found' });
+      res.status(404).json({ error: 'Session not found' });
+      return;
     }
     res.json(result.rows[0]);
   } catch (err) {
@@ -128,15 +138,16 @@ router.patch('/:id', async (req, res) => {
 });
 
 // DELETE /:id — delete session and its sales
-router.delete('/:id', async (req, res) => {
+router.delete('/:id', async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-    const result = await db.query(
+    const result = await query(
       'DELETE FROM sessions WHERE id = $1 RETURNING id',
       [id]
     );
     if (result.rows.length === 0) {
-      return res.status(404).json({ error: 'Session not found' });
+      res.status(404).json({ error: 'Session not found' });
+      return;
     }
     res.json({ message: 'Session deleted', id });
   } catch (err) {
@@ -145,4 +156,4 @@ router.delete('/:id', async (req, res) => {
   }
 });
 
-module.exports = router;
+export default router;

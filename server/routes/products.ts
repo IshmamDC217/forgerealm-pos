@@ -1,11 +1,12 @@
-const express = require('express');
-const router = express.Router();
-const db = require('../db');
+import { Router, Request, Response } from 'express';
+import { query } from '../db';
+
+const router = Router();
 
 // GET / — list all products
-router.get('/', async (req, res) => {
+router.get('/', async (_req: Request, res: Response) => {
   try {
-    const result = await db.query(
+    const result = await query(
       'SELECT * FROM products ORDER BY category, name'
     );
     res.json(result.rows);
@@ -16,13 +17,14 @@ router.get('/', async (req, res) => {
 });
 
 // POST / — create product
-router.post('/', async (req, res) => {
+router.post('/', async (req: Request, res: Response) => {
   try {
     const { name, default_price, image_url, category } = req.body;
     if (!name || default_price === undefined) {
-      return res.status(400).json({ error: 'Name and default_price are required' });
+      res.status(400).json({ error: 'Name and default_price are required' });
+      return;
     }
-    const result = await db.query(
+    const result = await query(
       `INSERT INTO products (name, default_price, image_url, category)
        VALUES ($1, $2, $3, $4)
        RETURNING *`,
@@ -36,13 +38,13 @@ router.post('/', async (req, res) => {
 });
 
 // PATCH /:id — update product
-router.patch('/:id', async (req, res) => {
+router.patch('/:id', async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
     const { name, default_price, image_url, category } = req.body;
 
-    const fields = [];
-    const values = [];
+    const fields: string[] = [];
+    const values: unknown[] = [];
     let idx = 1;
 
     if (name !== undefined) { fields.push(`name = $${idx++}`); values.push(name); }
@@ -51,19 +53,21 @@ router.patch('/:id', async (req, res) => {
     if (category !== undefined) { fields.push(`category = $${idx++}`); values.push(category); }
 
     if (fields.length === 0) {
-      return res.status(400).json({ error: 'No fields to update' });
+      res.status(400).json({ error: 'No fields to update' });
+      return;
     }
 
     fields.push(`updated_at = NOW()`);
     values.push(id);
 
-    const result = await db.query(
+    const result = await query(
       `UPDATE products SET ${fields.join(', ')} WHERE id = $${idx} RETURNING *`,
       values
     );
 
     if (result.rows.length === 0) {
-      return res.status(404).json({ error: 'Product not found' });
+      res.status(404).json({ error: 'Product not found' });
+      return;
     }
     res.json(result.rows[0]);
   } catch (err) {
@@ -73,15 +77,16 @@ router.patch('/:id', async (req, res) => {
 });
 
 // DELETE /:id — delete product
-router.delete('/:id', async (req, res) => {
+router.delete('/:id', async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-    const result = await db.query(
+    const result = await query(
       'DELETE FROM products WHERE id = $1 RETURNING id',
       [id]
     );
     if (result.rows.length === 0) {
-      return res.status(404).json({ error: 'Product not found' });
+      res.status(404).json({ error: 'Product not found' });
+      return;
     }
     res.json({ message: 'Product deleted', id });
   } catch (err) {
@@ -90,4 +95,4 @@ router.delete('/:id', async (req, res) => {
   }
 });
 
-module.exports = router;
+export default router;

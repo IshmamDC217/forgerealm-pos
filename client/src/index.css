@@ -9,51 +9,133 @@
   }
 
   input, textarea, select {
-    @apply bg-card border border-gray-600 text-gray-100 rounded-lg px-3 py-2
-           focus:outline-none focus:ring-2 focus:ring-gold focus:border-transparent
-           placeholder-gray-500;
+    @apply text-gray-100 rounded-xl px-3.5 py-2.5 placeholder-gray-500 transition-all duration-200;
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    backdrop-filter: blur(4px);
+  }
+
+  input:focus, textarea:focus, select:focus {
+    outline: none;
+    box-shadow: 0 0 0 2px rgba(212, 168, 67, 0.5);
+    border-color: rgba(212, 168, 67, 0.3);
   }
 
   button {
-    @apply transition-all duration-150 active:scale-95;
+    @apply transition-all duration-200;
+  }
+
+  button:active {
+    transform: scale(0.97);
   }
 }
 
 @layer components {
   .btn-gold {
-    @apply bg-gold text-navy font-semibold px-4 py-3 rounded-lg
-           hover:bg-gold-light active:bg-gold-dark
-           transition-colors duration-150;
+    @apply text-navy font-semibold px-5 py-3 rounded-xl transition-all duration-200;
+    background-image: linear-gradient(135deg, #d4a843, #e4c373);
+  }
+
+  .btn-gold:hover {
+    box-shadow: 0 0 20px rgba(212, 168, 67, 0.15);
+    filter: brightness(1.1);
+  }
+
+  .btn-gold:active {
+    box-shadow: none;
   }
 
   .btn-outline {
-    @apply border border-gray-600 text-gray-300 px-4 py-3 rounded-lg
-           hover:border-gold hover:text-gold
-           transition-colors duration-150;
+    @apply text-gray-300 px-5 py-3 rounded-xl transition-all duration-200;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    backdrop-filter: blur(4px);
+  }
+
+  .btn-outline:hover {
+    border-color: rgba(212, 168, 67, 0.4);
+    color: #d4a843;
+    background: rgba(212, 168, 67, 0.05);
   }
 
   .card {
-    @apply bg-card rounded-xl p-4 border border-gray-700/50;
+    @apply rounded-2xl p-4 transition-all duration-200;
+    background: rgba(255, 255, 255, 0.03);
+    backdrop-filter: blur(4px);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    box-shadow: 0 4px 24px rgba(0, 0, 0, 0.2);
+  }
+
+  .card-hover {
+    @apply rounded-2xl p-4 transition-all duration-200;
+    background: rgba(255, 255, 255, 0.03);
+    backdrop-filter: blur(4px);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    box-shadow: 0 4px 24px rgba(0, 0, 0, 0.2);
+  }
+
+  .card-hover:hover {
+    border-color: rgba(212, 168, 67, 0.2);
+    box-shadow: 0 0 10px rgba(212, 168, 67, 0.1);
+    background: rgba(255, 255, 255, 0.05);
+  }
+
+  .glass {
+    background: rgba(255, 255, 255, 0.03);
+    backdrop-filter: blur(16px);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+  }
+
+  .sidebar-item {
+    @apply flex items-center gap-3 px-4 py-3 rounded-xl transition-all duration-200;
+  }
+
+  .sidebar-item:hover {
+    background: rgba(255, 255, 255, 0.05);
+  }
+
+  .sidebar-item.active {
+    background: rgba(212, 168, 67, 0.1);
+    border-left: 2px solid #d4a843;
+    color: #d4a843;
+  }
+
+  .stat-card {
+    @apply rounded-2xl p-4 text-center relative overflow-hidden transition-all duration-200;
+    background: rgba(255, 255, 255, 0.03);
+    backdrop-filter: blur(4px);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    box-shadow: 0 4px 24px rgba(0, 0, 0, 0.2);
+  }
+
+  .stat-card::before {
+    content: '';
+    @apply absolute inset-0 pointer-events-none;
+    background: linear-gradient(to bottom, rgba(255, 255, 255, 0.03), transparent);
+  }
+
+  .section-title {
+    @apply text-xs font-semibold uppercase tracking-widest;
   }
 }
 
 /* Custom scrollbar */
 ::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+  width: 5px;
+  height: 5px;
 }
 
 ::-webkit-scrollbar-track {
-  background: #0a1628;
+  background: transparent;
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #374151;
-  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 10px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #4b5563;
+  background: rgba(255, 255, 255, 0.2);
 }
 
 /* Number input hide arrows */
@@ -67,14 +149,8 @@ input[type='number'] {
   -moz-appearance: textfield;
 }
 
-/* Smooth page transitions */
-.page-enter {
-  opacity: 0;
-  transform: translateY(8px);
-}
-
-.page-enter-active {
-  opacity: 1;
-  transform: translateY(0);
-  transition: opacity 200ms ease-out, transform 200ms ease-out;
+/* Selection color */
+::selection {
+  background: rgba(212, 168, 67, 0.3);
+  color: #fff;
 }

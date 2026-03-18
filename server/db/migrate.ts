@@ -1,7 +1,7 @@
-require('dotenv').config({ path: __dirname + '/../.env' });
-const { pool } = require('./index');
+import 'dotenv/config';
+import { pool } from './index';
 
-async function migrate() {
+async function migrate(): Promise<void> {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -41,6 +41,37 @@ async function migrate() {
         quantity INTEGER NOT NULL DEFAULT 1 CHECK (quantity > 0),
         price_charged DECIMAL(10, 2) NOT NULL CHECK (price_charged >= 0),
         timestamp TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
+
+    // Add payment_method column if it doesn't exist
+    await client.query(`
+      DO $$ BEGIN
+        ALTER TABLE sales ADD COLUMN payment_method VARCHAR(10) NOT NULL DEFAULT 'cash';
+      EXCEPTION WHEN duplicate_column THEN NULL;
+      END $$
+    `);
+
+    // Add card fee tracking columns to sessions
+    await client.query(`
+      DO $$ BEGIN
+        ALTER TABLE sessions ADD COLUMN card_fee_applied BOOLEAN NOT NULL DEFAULT false;
+      EXCEPTION WHEN duplicate_column THEN NULL;
+      END $$
+    `);
+    await client.query(`
+      DO $$ BEGIN
+        ALTER TABLE sessions ADD COLUMN card_fee_rate DECIMAL(5, 2) NOT NULL DEFAULT 1.69;
+      EXCEPTION WHEN duplicate_column THEN NULL;
+      END $$
+    `);
+
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS users (
+        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        username VARCHAR(100) UNIQUE NOT NULL,
+        password_hash VARCHAR(255) NOT NULL,
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       )
     `);

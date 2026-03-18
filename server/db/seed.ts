@@ -1,7 +1,8 @@
-require('dotenv').config({ path: __dirname + '/../.env' });
-const { pool } = require('./index');
+import 'dotenv/config';
+import { pool } from './index';
+import { SeedProduct } from '../types';
 
-const products = [
+const products: SeedProduct[] = [
   // Articulated
   { name: 'Big Dragon', default_price: 10.00, category: 'Articulated' },
   { name: 'Water Dragon', default_price: 10.00, category: 'Articulated' },
@@ -48,7 +49,7 @@ const products = [
   { name: 'Knight', default_price: 5.00, category: 'Other' },
 ];
 
-async function seed() {
+async function seed(): Promise<void> {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');

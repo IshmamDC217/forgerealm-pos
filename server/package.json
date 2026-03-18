@@ -2,23 +2,34 @@
   "name": "forgerealm-pos-server",
   "version": "1.0.0",
   "description": "ForgeRealm POS tracking server",
-  "main": "index.js",
+  "main": "index.ts",
   "scripts": {
-    "start": "node index.js",
-    "dev": "nodemon index.js",
-    "migrate": "node db/migrate.js",
-    "seed": "node db/seed.js"
+    "start": "node --import tsx index.ts",
+    "dev": "tsx watch index.ts",
+    "migrate": "tsx db/migrate.ts",
+    "seed": "tsx db/seed.ts",
+    "create-user": "tsx db/create-user.ts"
   },
   "dependencies": {
+    "bcrypt": "^6.0.0",
     "cors": "^2.8.5",
     "dotenv": "^16.4.7",
     "exceljs": "^4.4.0",
     "express": "^4.21.2",
+    "jsonwebtoken": "^9.0.3",
     "pg": "^8.13.1",
     "uuid": "^11.1.0"
   },
   "devDependencies": {
-    "nodemon": "^3.1.9"
+    "@types/bcrypt": "^6.0.0",
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.6",
+    "@types/jsonwebtoken": "^9.0.10",
+    "@types/node": "^25.5.0",
+    "@types/pg": "^8.18.0",
+    "nodemon": "^3.1.9",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3"
   },
   "author": "Ishmam Ahmed",
   "license": "ISC"
