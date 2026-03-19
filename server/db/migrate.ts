@@ -89,6 +89,31 @@ async function migrate(): Promise<void> {
       CREATE INDEX IF NOT EXISTS idx_sessions_status ON sessions(status)
     `);
 
+    // Session stock tracking — initial inventory per session
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS session_stock (
+        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        session_id UUID NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+        product_id UUID NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+        initial_quantity INTEGER NOT NULL CHECK (initial_quantity >= 0),
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        UNIQUE(session_id, product_id)
+      )
+    `);
+
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_session_stock_session_id ON session_stock(session_id)
+    `);
+
+    // Add final_quantity column for end-of-day stock count
+    await client.query(`
+      DO $$ BEGIN
+        ALTER TABLE session_stock ADD COLUMN final_quantity INTEGER DEFAULT NULL;
+      EXCEPTION WHEN duplicate_column THEN NULL;
+      END $$
+    `);
+
     await client.query('COMMIT');
     console.log('Migration completed successfully.');
   } catch (err) {

@@ -9,6 +9,7 @@ import sessionsRouter from './routes/sessions';
 import productsRouter from './routes/products';
 import salesRouter from './routes/sales';
 import exportRouter from './routes/export';
+import stockRouter from './routes/stock';
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -28,6 +29,7 @@ app.use('/api/sessions', requireAuth, sessionsRouter);
 app.use('/api/products', requireAuth, productsRouter);
 app.use('/api/sales', requireAuth, salesRouter);
 app.use('/api/export', requireAuth, exportRouter);
+app.use('/api/stock', requireAuth, stockRouter);
 
 // Serve client build in production
 if (process.env.NODE_ENV === 'production') {

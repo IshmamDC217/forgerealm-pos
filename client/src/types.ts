@@ -43,3 +43,41 @@ export interface Sale {
   product_name?: string;
   product_category?: string;
 }
+
+export interface StockItem {
+  id: string;
+  session_id: string;
+  product_id: string;
+  initial_quantity: number;
+  final_quantity: number | null;
+  product_name: string;
+  product_category: string | null;
+  default_price: number;
+  total_sold: number;
+}
+
+export interface StockSummaryItem {
+  product_id: string;
+  product_name: string;
+  product_category: string | null;
+  default_price: number;
+  initial_quantity: number;
+  final_quantity: number | null;
+  total_sold: number;
+  total_revenue: number;
+  sold_by_count: number | null;
+  sold_by_pos: number;
+  sold: number;
+  remaining: number;
+}
+
+export interface StockSummary {
+  items: StockSummaryItem[];
+  totals: {
+    initial: number;
+    sold: number;
+    remaining: number;
+    revenue: number;
+    has_final_counts: boolean;
+  };
+}

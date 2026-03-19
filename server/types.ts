@@ -61,3 +61,13 @@ export interface SeedProduct {
   default_price: number;
   category: string;
 }
+
+export interface SessionStock {
+  id: string;
+  session_id: string;
+  product_id: string;
+  initial_quantity: number;
+  final_quantity: number | null;
+  created_at: string;
+  updated_at: string;
+}

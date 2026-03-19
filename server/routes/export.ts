@@ -12,6 +12,16 @@ interface SaleRow {
   category: string | null;
 }
 
+interface StockRow {
+  product_name: string;
+  category: string | null;
+  initial_quantity: number;
+  final_quantity: number | null;
+  total_sold: number;
+  remaining: number;
+  total_revenue: number;
+}
+
 const router = Router();
 
 // GET /:sessionId — export session data as XLSX or CSV
@@ -57,11 +67,44 @@ router.get('/:sessionId', async (req: Request, res: Response) => {
       [sessionId]
     );
 
-    if (format === 'csv') {
-      return exportCSV(res, session, sales, summaryResult.rows);
+    // Fetch stock data (may be empty if never set)
+    const stockResult = await query<StockRow>(
+      `SELECT p.name AS product_name, p.category,
+              ss.initial_quantity, ss.final_quantity,
+              COALESCE(sold.total_sold, 0) AS total_sold,
+              CASE
+                WHEN ss.final_quantity IS NOT NULL THEN ss.final_quantity
+                ELSE ss.initial_quantity - COALESCE(sold.total_sold, 0)
+              END AS remaining,
+              COALESCE(sold.total_revenue, 0) AS total_revenue
+       FROM session_stock ss
+       JOIN products p ON p.id = ss.product_id
+       LEFT JOIN (
+         SELECT product_id,
+                SUM(quantity) AS total_sold,
+                SUM(quantity * price_charged) AS total_revenue
+         FROM sales
+         WHERE session_id = $1
+         GROUP BY product_id
+       ) sold ON sold.product_id = ss.product_id
+       WHERE ss.session_id = $1
+       ORDER BY p.category, p.name`,
+      [sessionId]
+    );
+    const stockRows = stockResult.rows;
+    const hasStock = stockRows.length > 0;
+
+    // Build a lookup: product_name -> stock info
+    const stockByProduct: Record<string, StockRow> = {};
+    for (const row of stockRows) {
+      stockByProduct[row.product_name] = row;
     }
 
-    return exportXLSX(res, session, sales, summaryResult.rows);
+    if (format === 'csv') {
+      return exportCSV(res, session, sales, summaryResult.rows, hasStock, stockByProduct, stockRows);
+    }
+
+    return exportXLSX(res, session, sales, summaryResult.rows, hasStock, stockByProduct, stockRows);
   } catch (err) {
     console.error('Error exporting:', err);
     res.status(500).json({ error: 'Failed to export session data' });
@@ -72,7 +115,10 @@ async function exportCSV(
   res: Response,
   session: Session,
   sales: SaleRow[],
-  summary: ProductSummary[]
+  summary: ProductSummary[],
+  hasStock: boolean,
+  stockByProduct: Record<string, StockRow>,
+  stockRows: StockRow[]
 ): Promise<void> {
   const lines: string[] = [];
   const sessionDate = new Date(session.date).toLocaleDateString('en-GB');
@@ -83,18 +129,50 @@ async function exportCSV(
   lines.push(`Date: ${sessionDate}`);
   lines.push('');
 
-  // Product summary
+  // Product summary — include stock columns (empty if not set)
   lines.push('--- Product Summary ---');
-  lines.push('Product,Category,Units Sold,Avg Price,Total Revenue');
+  const headerCols = ['Product', 'Category', 'Starting Stock', 'Units Sold', 'Remaining', 'Avg Price', 'Total Revenue'];
+  lines.push(headerCols.join(','));
   let grandTotal = 0;
   let grandUnits = 0;
+  let grandStock = 0;
+  let grandRemaining = 0;
   for (const row of summary) {
     const revenue = parseFloat(row.total_revenue);
+    const units = parseInt(row.total_units);
     grandTotal += revenue;
-    grandUnits += parseInt(row.total_units);
-    lines.push(`"${row.product_name}","${row.category || ''}",${row.total_units},\u00a3${parseFloat(row.avg_price).toFixed(2)},\u00a3${revenue.toFixed(2)}`);
+    grandUnits += units;
+    const stock = stockByProduct[row.product_name];
+    const startingStock = stock ? String(parseInt(String(stock.initial_quantity))) : '';
+    const remaining = stock ? String(parseInt(String(stock.remaining))) : '';
+    if (stock) {
+      grandStock += parseInt(String(stock.initial_quantity));
+      grandRemaining += parseInt(String(stock.remaining));
+    }
+    lines.push(`"${row.product_name}","${row.category || ''}",${startingStock},${units},${remaining},\u00a3${parseFloat(row.avg_price).toFixed(2)},\u00a3${revenue.toFixed(2)}`);
   }
-  lines.push(`TOTAL,,${grandUnits},,\u00a3${grandTotal.toFixed(2)}`);
+
+  // Include stock-only items (brought but never sold)
+  if (hasStock) {
+    for (const stockRow of stockRows) {
+      const alreadyInSummary = summary.some(s => s.product_name === stockRow.product_name);
+      if (!alreadyInSummary) {
+        const initial = parseInt(String(stockRow.initial_quantity));
+        grandStock += initial;
+        grandRemaining += initial;
+        lines.push(`"${stockRow.product_name}","${stockRow.category || ''}",${initial},0,${initial},,-`);
+      }
+    }
+  }
+
+  const totalStockCol = hasStock ? String(grandStock) : '';
+  const totalRemainingCol = hasStock ? String(grandRemaining) : '';
+  lines.push(`TOTAL,,${totalStockCol},${grandUnits},${totalRemainingCol},,\u00a3${grandTotal.toFixed(2)}`);
+
+  if (hasStock && grandStock > 0) {
+    lines.push('');
+    lines.push(`Sell-through Rate,${Math.round((grandUnits / grandStock) * 100)}%`);
+  }
 
   if (session.card_fee_applied) {
     const feeRate = parseFloat(String(session.card_fee_rate)) || 1.69;
@@ -135,7 +213,10 @@ async function exportXLSX(
   res: Response,
   session: Session,
   sales: SaleRow[],
-  summary: ProductSummary[]
+  summary: ProductSummary[],
+  hasStock: boolean,
+  stockByProduct: Record<string, StockRow>,
+  stockRows: StockRow[]
 ): Promise<void> {
   const workbook = new ExcelJS.Workbook();
   workbook.creator = 'ForgeRealm POS';
@@ -150,6 +231,11 @@ async function exportXLSX(
   const white = 'FFFFFF';
   const lightGold = 'FFF8E7';
   const lightGray = 'F3F4F6';
+  const purple = '7C3AED';
+
+  // Total column count changes based on stock
+  const colCount = 8; // Product, Category, Starting Stock, Units Sold, Remaining, Avg Price, Total Revenue, % of Revenue
+  const lastCol = String.fromCharCode(64 + colCount); // 'H'
 
   // === Summary Sheet ===
   const summarySheet = workbook.addWorksheet('Summary', {
@@ -157,7 +243,7 @@ async function exportXLSX(
   });
 
   // Header
-  summarySheet.mergeCells('A1:F1');
+  summarySheet.mergeCells(`A1:${lastCol}1`);
   const titleCell = summarySheet.getCell('A1');
   titleCell.value = 'FORGEREALM';
   titleCell.font = { name: 'Arial', size: 22, bold: true, color: { argb: gold } };
@@ -165,7 +251,7 @@ async function exportXLSX(
   titleCell.alignment = { horizontal: 'center', vertical: 'middle' };
   summarySheet.getRow(1).height = 45;
 
-  summarySheet.mergeCells('A2:F2');
+  summarySheet.mergeCells(`A2:${lastCol}2`);
   const subtitleCell = summarySheet.getCell('A2');
   subtitleCell.value = 'Sales Report';
   subtitleCell.font = { name: 'Arial', size: 14, color: { argb: white } };
@@ -195,7 +281,7 @@ async function exportXLSX(
 
   // Product summary table
   const tableStart = infoStart + infoLabels.length + 2;
-  summarySheet.mergeCells(`A${tableStart}:F${tableStart}`);
+  summarySheet.mergeCells(`A${tableStart}:${lastCol}${tableStart}`);
   const sectionTitle = summarySheet.getCell(`A${tableStart}`);
   sectionTitle.value = 'Product Breakdown';
   sectionTitle.font = { name: 'Arial', size: 14, bold: true, color: { argb: navy } };
@@ -204,7 +290,7 @@ async function exportXLSX(
   summarySheet.getRow(tableStart).height = 30;
 
   const headerRow = tableStart + 1;
-  const headers = ['Product', 'Category', 'Units Sold', 'Avg Price', 'Total Revenue', '% of Revenue'];
+  const headers = ['Product', 'Category', 'Starting Stock', 'Units Sold', 'Remaining', 'Avg Price', 'Total Revenue', '% of Revenue'];
   headers.forEach((h, i) => {
     const cell = summarySheet.getCell(headerRow, i + 1);
     cell.value = h;
@@ -219,48 +305,144 @@ async function exportXLSX(
 
   let grandTotal = 0;
   let grandUnits = 0;
+  let grandStock = 0;
+  let grandRemaining = 0;
   summary.forEach(r => { grandTotal += parseFloat(r.total_revenue); grandUnits += parseInt(r.total_units); });
 
-  summary.forEach((row, i) => {
+  // Build combined rows: sales summary + unsold stock items
+  interface CombinedRow {
+    product_name: string;
+    category: string | null;
+    starting_stock: number | null;
+    units_sold: number;
+    remaining: number | null;
+    avg_price: number | null;
+    revenue: number;
+  }
+
+  const combinedRows: CombinedRow[] = [];
+  const addedProducts = new Set<string>();
+
+  for (const row of summary) {
+    const stock = stockByProduct[row.product_name];
+    const startingStock = stock ? parseInt(String(stock.initial_quantity)) : null;
+    const remaining = stock ? parseInt(String(stock.remaining)) : null;
+    if (stock) {
+      grandStock += parseInt(String(stock.initial_quantity));
+      grandRemaining += parseInt(String(stock.remaining));
+    }
+    combinedRows.push({
+      product_name: row.product_name,
+      category: row.category,
+      starting_stock: startingStock,
+      units_sold: parseInt(row.total_units),
+      remaining,
+      avg_price: parseFloat(row.avg_price),
+      revenue: parseFloat(row.total_revenue),
+    });
+    addedProducts.add(row.product_name);
+  }
+
+  // Add stock-only items (brought but zero sales)
+  if (hasStock) {
+    for (const stockRow of stockRows) {
+      if (!addedProducts.has(stockRow.product_name)) {
+        const initial = parseInt(String(stockRow.initial_quantity));
+        grandStock += initial;
+        grandRemaining += initial;
+        combinedRows.push({
+          product_name: stockRow.product_name,
+          category: stockRow.category,
+          starting_stock: initial,
+          units_sold: 0,
+          remaining: initial,
+          avg_price: null,
+          revenue: 0,
+        });
+      }
+    }
+  }
+
+  combinedRows.forEach((row, i) => {
     const r = headerRow + 1 + i;
-    const revenue = parseFloat(row.total_revenue);
     const bgColor = i % 2 === 0 ? lightGold : lightGray;
 
-    const values: (string | number)[] = [
+    // cols: Product, Category, Starting Stock, Units Sold, Remaining, Avg Price, Total Revenue, % of Revenue
+    const values: (string | number | null)[] = [
       row.product_name,
       row.category || '',
-      parseInt(row.total_units),
-      parseFloat(row.avg_price),
-      revenue,
-      grandTotal > 0 ? revenue / grandTotal : 0,
+      row.starting_stock,
+      row.units_sold,
+      row.remaining,
+      row.avg_price,
+      row.revenue,
+      grandTotal > 0 ? row.revenue / grandTotal : 0,
     ];
 
     values.forEach((v, j) => {
       const cell = summarySheet.getCell(r, j + 1);
-      cell.value = v;
+      cell.value = v === null ? '' : v;
       cell.font = { name: 'Arial', size: 10 };
       cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: bgColor.replace('#', '') } };
       cell.alignment = { horizontal: j < 2 ? 'left' : 'center', vertical: 'middle' };
 
-      if (j === 3 || j === 4) cell.numFmt = '"£"#,##0.00';
-      if (j === 5) cell.numFmt = '0.0%';
+      if (j === 5 || j === 6) cell.numFmt = '"£"#,##0.00';
+      if (j === 7) cell.numFmt = '0.0%';
+
+      // Highlight remaining column with color
+      if (j === 4 && v !== null && v !== '') {
+        const rem = v as number;
+        if (rem === 0) {
+          cell.font = { name: 'Arial', size: 10, bold: true, color: { argb: '16A34A' } }; // green
+        } else if (rem < 0) {
+          cell.font = { name: 'Arial', size: 10, bold: true, color: { argb: 'CC0000' } }; // red
+        }
+      }
+
+      // Purple tint for stock columns if stock is set
+      if ((j === 2 || j === 4) && v !== null && v !== '' && hasStock) {
+        cell.font = { ...cell.font, color: { argb: purple } };
+      }
     });
   });
 
   // Totals row
-  const totalsRow = headerRow + 1 + summary.length;
-  const totalsData: (string | number)[] = ['TOTAL', '', grandUnits, '', grandTotal, '100%'];
+  const totalsRow = headerRow + 1 + combinedRows.length;
+  const totalsData: (string | number)[] = [
+    'TOTAL', '',
+    hasStock ? grandStock : '',
+    grandUnits,
+    hasStock ? grandRemaining : '',
+    '',
+    grandTotal,
+    grandTotal > 0 ? 1 : 0,
+  ] as (string | number)[];
   totalsData.forEach((v, j) => {
     const cell = summarySheet.getCell(totalsRow, j + 1);
-    cell.value = v === '100%' ? 1 : v;
+    cell.value = v;
     cell.font = { name: 'Arial', size: 11, bold: true, color: { argb: navy } };
     cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: gold } };
     cell.alignment = { horizontal: j < 2 ? 'left' : 'center', vertical: 'middle' };
-    if (j === 4) cell.numFmt = '"£"#,##0.00';
-    if (j === 5) cell.numFmt = '0.0%';
+    if (j === 6) cell.numFmt = '"£"#,##0.00';
+    if (j === 7) cell.numFmt = '0.0%';
     cell.border = { top: { style: 'medium', color: { argb: navy } } };
   });
   summarySheet.getRow(totalsRow).height = 28;
+
+  let nextSectionStart = totalsRow + 2;
+
+  // Sell-through rate (if stock was tracked)
+  if (hasStock && grandStock > 0) {
+    const sellRow = nextSectionStart;
+    const labelCell = summarySheet.getCell(`A${sellRow}`);
+    labelCell.value = 'Sell-through Rate';
+    labelCell.font = { name: 'Arial', size: 11, bold: true, color: { argb: purple } };
+    const valCell = summarySheet.getCell(`B${sellRow}`);
+    valCell.value = grandUnits / grandStock;
+    valCell.numFmt = '0%';
+    valCell.font = { name: 'Arial', size: 14, bold: true, color: { argb: purple } };
+    nextSectionStart = sellRow + 2;
+  }
 
   // Card fee section
   if (session.card_fee_applied) {
@@ -274,8 +456,8 @@ async function exportXLSX(
     const totalFees = cardRevenue * (feeRate / 100);
     const netRevenue = grandTotal - totalFees;
 
-    const feeStart = totalsRow + 2;
-    summarySheet.mergeCells(`A${feeStart}:F${feeStart}`);
+    const feeStart = nextSectionStart;
+    summarySheet.mergeCells(`A${feeStart}:${lastCol}${feeStart}`);
     const feeTitle = summarySheet.getCell(`A${feeStart}`);
     feeTitle.value = 'Card Fee Summary (SumUp)';
     feeTitle.font = { name: 'Arial', size: 12, bold: true, color: { argb: navy } };
@@ -308,7 +490,7 @@ async function exportXLSX(
 
   // Column widths
   summarySheet.columns = [
-    { width: 22 }, { width: 14 }, { width: 12 }, { width: 12 }, { width: 14 }, { width: 14 },
+    { width: 22 }, { width: 14 }, { width: 14 }, { width: 12 }, { width: 12 }, { width: 12 }, { width: 14 }, { width: 14 },
   ];
 
   // === Sales Detail Sheet ===

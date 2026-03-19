@@ -1,10 +1,10 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useSessions } from '../contexts/SessionsContext';
-import { apiGet, apiPost, apiPatch, apiDelete } from '../utils/api';
+import { apiGet, apiPost, apiPatch, apiDelete, apiPut } from '../utils/api';
 import { formatCurrency } from '../utils/currency';
-import type { Session, Product, Sale, SessionStats } from '../types';
+import type { Session, Product, Sale, SessionStats, StockItem, StockSummary } from '../types';
 import PageTransition from '../components/PageTransition';
 import HomeButton from '../components/HomeButton';
 
@@ -29,17 +29,31 @@ export default function SessionView() {
   const [editSessionForm, setEditSessionForm] = useState({ name: '', location: '', notes: '' });
   const [confirmDelete, setConfirmDelete] = useState(false);
 
+  // Stock state
+  const [stockItems, setStockItems] = useState<StockItem[]>([]);
+  const [showStockSetup, setShowStockSetup] = useState(false);
+  const [stockForm, setStockForm] = useState<Record<string, number>>({});
+  const [savingStock, setSavingStock] = useState(false);
+  const [showStockSummary, setShowStockSummary] = useState(false);
+  const [stockSummary, setStockSummary] = useState<StockSummary | null>(null);
+  const [loadingSummary, setLoadingSummary] = useState(false);
+  const [showFinalCount, setShowFinalCount] = useState(false);
+  const [finalCountForm, setFinalCountForm] = useState<Record<string, number>>({});
+  const [savingFinalCount, setSavingFinalCount] = useState(false);
+
   const fetchData = useCallback(async () => {
     if (!id) return;
     try {
-      const [sessionData, productsData, salesData] = await Promise.all([
+      const [sessionData, productsData, salesData, stockData] = await Promise.all([
         apiGet<Session>(`/sessions/${id}`),
         apiGet<Product[]>('/products'),
         apiGet<Sale[]>(`/sales/session/${id}`),
+        apiGet<StockItem[]>(`/stock/session/${id}`),
       ]);
       setSession(sessionData);
       setProducts(productsData);
       setSales(salesData);
+      setStockItems(stockData);
     } catch {
       console.error('Failed to load session');
     } finally {
@@ -51,6 +65,19 @@ export default function SessionView() {
     setLoading(true);
     fetchData();
   }, [fetchData]);
+
+  // Build a map of product_id -> remaining stock
+  const stockMap = useMemo(() => {
+    const map: Record<string, { initial: number; sold: number; remaining: number }> = {};
+    for (const item of stockItems) {
+      const sold = parseInt(String(item.total_sold)) || 0;
+      const initial = parseInt(String(item.initial_quantity)) || 0;
+      map[item.product_id] = { initial, sold, remaining: initial - sold };
+    }
+    return map;
+  }, [stockItems]);
+
+  const hasStock = stockItems.length > 0;
 
   const selectProduct = (product: Product) => {
     setSelectedProduct(product);
@@ -83,6 +110,14 @@ export default function SessionView() {
           },
         };
       });
+      // Update stock sold count locally
+      if (stockMap[selectedProduct.id]) {
+        setStockItems(prev => prev.map(si =>
+          si.product_id === selectedProduct.id
+            ? { ...si, total_sold: parseInt(String(si.total_sold)) + quantity }
+            : si
+        ));
+      }
       setSelectedProduct(null);
       setQuantity(1);
       setPrice('');
@@ -114,6 +149,14 @@ export default function SessionView() {
             },
           };
         });
+        // Update stock sold count locally
+        if (stockMap[sale.product_id]) {
+          setStockItems(prev => prev.map(si =>
+            si.product_id === sale.product_id
+              ? { ...si, total_sold: Math.max(0, parseInt(String(si.total_sold)) - sale.quantity) }
+              : si
+          ));
+        }
         refreshSessions();
       }
     } catch {
@@ -150,6 +193,14 @@ export default function SessionView() {
           },
         };
       });
+      // Update stock sold count locally
+      if (stockMap[sale.product_id]) {
+        setStockItems(prev => prev.map(si =>
+          si.product_id === sale.product_id
+            ? { ...si, total_sold: parseInt(String(si.total_sold)) - oldUnits + newUnits }
+            : si
+        ));
+      }
       setEditingSale(null);
       refreshSessions();
     } catch {
@@ -218,6 +269,82 @@ export default function SessionView() {
     window.open(`/api/export/${id}?format=${format}&token=${token}`, '_blank');
   };
 
+  // Stock setup handlers
+  const openStockSetup = () => {
+    const form: Record<string, number> = {};
+    for (const p of products) {
+      const existing = stockItems.find(si => si.product_id === p.id);
+      form[p.id] = existing ? parseInt(String(existing.initial_quantity)) : 0;
+    }
+    setStockForm(form);
+    setShowStockSetup(true);
+  };
+
+  const saveStock = async () => {
+    if (!id) return;
+    setSavingStock(true);
+    try {
+      const items = Object.entries(stockForm).map(([product_id, initial_quantity]) => ({
+        product_id,
+        initial_quantity,
+      }));
+      const updated = await apiPut<StockItem[]>(`/stock/session/${id}`, { items });
+      setStockItems(updated);
+      setShowStockSetup(false);
+    } catch {
+      console.error('Failed to save stock');
+    } finally {
+      setSavingStock(false);
+    }
+  };
+
+  const openStockSummary = async () => {
+    if (!id) return;
+    setShowStockSummary(true);
+    setLoadingSummary(true);
+    try {
+      const summary = await apiGet<StockSummary>(`/stock/session/${id}/summary`);
+      setStockSummary(summary);
+    } catch {
+      console.error('Failed to load stock summary');
+    } finally {
+      setLoadingSummary(false);
+    }
+  };
+
+  // Final count (end-of-day reconciliation) handlers
+  const openFinalCount = () => {
+    const form: Record<string, number> = {};
+    for (const si of stockItems) {
+      // Default to current final_quantity if already set, otherwise start at initial
+      form[si.product_id] = si.final_quantity !== null
+        ? parseInt(String(si.final_quantity))
+        : parseInt(String(si.initial_quantity));
+    }
+    setFinalCountForm(form);
+    setShowFinalCount(true);
+  };
+
+  const saveFinalCount = async () => {
+    if (!id) return;
+    setSavingFinalCount(true);
+    try {
+      const items = Object.entries(finalCountForm).map(([product_id, final_quantity]) => ({
+        product_id,
+        final_quantity,
+      }));
+      const updated = await apiPut<StockItem[]>(`/stock/session/${id}/final`, { items });
+      setStockItems(updated);
+      setShowFinalCount(false);
+    } catch {
+      console.error('Failed to save final count');
+    } finally {
+      setSavingFinalCount(false);
+    }
+  };
+
+  const hasFinalCounts = stockItems.some(si => si.final_quantity !== null);
+
   if (loading) {
     return (
       <div className="flex items-center justify-center min-h-[50vh] gap-3 text-gray-500">
@@ -255,6 +382,14 @@ export default function SessionView() {
     const cat = p.category || 'Other';
     if (!categories[cat]) categories[cat] = [];
     categories[cat].push(p);
+  });
+
+  // Group stock form products by category for the setup modal
+  const stockCategories: Record<string, Product[]> = {};
+  products.forEach(p => {
+    const cat = p.category || 'Other';
+    if (!stockCategories[cat]) stockCategories[cat] = [];
+    stockCategories[cat].push(p);
   });
 
   return (
@@ -348,6 +483,340 @@ export default function SessionView() {
           )}
         </AnimatePresence>
 
+        {/* Stock Setup Modal */}
+        <AnimatePresence>
+          {showStockSetup && (
+            <motion.div
+              className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setShowStockSetup(false)}
+            >
+              <motion.div
+                initial={{ opacity: 0, scale: 0.95, y: 10 }}
+                animate={{ opacity: 1, scale: 1, y: 0 }}
+                exit={{ opacity: 0, scale: 0.95, y: 10 }}
+                transition={{ duration: 0.2 }}
+                onClick={e => e.stopPropagation()}
+                className="card w-full max-w-lg max-h-[80vh] flex flex-col"
+              >
+                <div className="flex items-center justify-between mb-4">
+                  <div>
+                    <h3 className="font-semibold text-gold text-sm">Set Starting Stock</h3>
+                    <p className="text-xs text-gray-500 mt-0.5">How many of each product are you bringing to this stall?</p>
+                  </div>
+                  <button
+                    onClick={() => {
+                      const newForm: Record<string, number> = {};
+                      products.forEach(p => { newForm[p.id] = 0; });
+                      setStockForm(newForm);
+                    }}
+                    className="text-xs text-gray-500 hover:text-red-400 transition-colors"
+                  >
+                    Clear All
+                  </button>
+                </div>
+
+                <div className="overflow-y-auto flex-1 -mx-1 px-1 space-y-4">
+                  {Object.entries(stockCategories).map(([cat, prods]) => (
+                    <div key={cat}>
+                      <p className="section-title text-gray-600 mb-2">{cat}</p>
+                      <div className="space-y-1.5">
+                        {prods.map(p => (
+                          <div key={p.id} className="flex items-center justify-between py-1.5 px-2 rounded-xl hover:bg-white/[0.03] transition-colors">
+                            <span className="text-sm text-white flex-1">{p.name}</span>
+                            <div className="flex items-center gap-2">
+                              <motion.button
+                                type="button"
+                                onClick={() => setStockForm(f => ({ ...f, [p.id]: Math.max(0, (f[p.id] || 0) - 1) }))}
+                                className="btn-outline !px-2 !py-1 text-sm"
+                                whileTap={{ scale: 0.9 }}
+                              >-</motion.button>
+                              <input
+                                type="number"
+                                value={stockForm[p.id] || 0}
+                                onChange={e => setStockForm(f => ({ ...f, [p.id]: Math.max(0, parseInt(e.target.value) || 0) }))}
+                                className="w-14 text-center text-sm"
+                                min="0"
+                              />
+                              <motion.button
+                                type="button"
+                                onClick={() => setStockForm(f => ({ ...f, [p.id]: (f[p.id] || 0) + 1 }))}
+                                className="btn-outline !px-2 !py-1 text-sm"
+                                whileTap={{ scale: 0.9 }}
+                              >+</motion.button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="flex gap-2 mt-4 pt-3 border-t border-white/[0.06]">
+                  <motion.button
+                    onClick={saveStock}
+                    disabled={savingStock}
+                    className="btn-gold flex-1 disabled:opacity-50"
+                    whileTap={{ scale: 0.97 }}
+                  >
+                    {savingStock ? 'Saving...' : 'Save Stock'}
+                  </motion.button>
+                  <button onClick={() => setShowStockSetup(false)} className="btn-outline flex-1">Cancel</button>
+                </div>
+              </motion.div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        {/* Stock Summary Modal */}
+        <AnimatePresence>
+          {showStockSummary && (
+            <motion.div
+              className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setShowStockSummary(false)}
+            >
+              <motion.div
+                initial={{ opacity: 0, scale: 0.95, y: 10 }}
+                animate={{ opacity: 1, scale: 1, y: 0 }}
+                exit={{ opacity: 0, scale: 0.95, y: 10 }}
+                transition={{ duration: 0.2 }}
+                onClick={e => e.stopPropagation()}
+                className="card w-full max-w-2xl max-h-[80vh] flex flex-col"
+              >
+                <div className="mb-4">
+                  <h3 className="font-semibold text-gold text-sm">Stock vs Sales Summary</h3>
+                  <p className="text-xs text-gray-500 mt-0.5">
+                    {stockSummary?.totals.has_final_counts
+                      ? 'Based on your end-of-day stock count'
+                      : 'Based on POS sales recorded during the session'}
+                  </p>
+                </div>
+
+                {loadingSummary ? (
+                  <div className="flex items-center justify-center py-8 gap-2 text-gray-500">
+                    <motion.div
+                      className="w-2 h-2 rounded-full bg-gold/50"
+                      animate={{ scale: [1, 1.5, 1], opacity: [0.3, 1, 0.3] }}
+                      transition={{ duration: 1, repeat: Infinity }}
+                    />
+                    Loading...
+                  </div>
+                ) : stockSummary ? (
+                  <div className="overflow-y-auto flex-1">
+                    {/* Method badge */}
+                    {stockSummary.totals.has_final_counts && (
+                      <div className="mb-3 px-3 py-1.5 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-xs font-medium inline-flex items-center gap-1.5">
+                        <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                        </svg>
+                        Reconciled from final stock count
+                      </div>
+                    )}
+
+                    {/* Totals cards */}
+                    <div className="grid grid-cols-4 gap-2 mb-4">
+                      {[
+                        { label: 'Brought', value: String(stockSummary.totals.initial), color: 'text-white' },
+                        { label: 'Sold', value: String(stockSummary.totals.sold), color: 'text-green-400' },
+                        { label: 'Remaining', value: String(stockSummary.totals.remaining), color: 'text-orange-400' },
+                        { label: 'Revenue', value: formatCurrency(stockSummary.totals.revenue), color: 'text-gold' },
+                      ].map((stat) => (
+                        <div key={stat.label} className="stat-card">
+                          <p className="text-gray-500 text-xs mb-1">{stat.label}</p>
+                          <p className={`text-lg font-bold ${stat.color}`}>{stat.value}</p>
+                        </div>
+                      ))}
+                    </div>
+
+                    {/* Per-product table */}
+                    <div className="rounded-xl border border-white/[0.06] overflow-hidden">
+                      <table className="w-full text-sm">
+                        <thead>
+                          <tr className="bg-white/[0.03]">
+                            <th className="text-left py-2 px-3 text-gray-500 font-medium text-xs">Product</th>
+                            <th className="text-center py-2 px-3 text-gray-500 font-medium text-xs">Brought</th>
+                            <th className="text-center py-2 px-3 text-gray-500 font-medium text-xs">Sold</th>
+                            <th className="text-center py-2 px-3 text-gray-500 font-medium text-xs">Left</th>
+                            <th className="text-right py-2 px-3 text-gray-500 font-medium text-xs">Revenue</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {stockSummary.items.map((item, i) => {
+                            const initial = parseInt(String(item.initial_quantity));
+                            const sold = item.sold;
+                            const remaining = item.remaining;
+                            const revenue = parseFloat(String(item.total_revenue));
+                            const soldPercent = initial > 0 ? Math.round((sold / initial) * 100) : 0;
+                            const hasFinal = item.final_quantity !== null;
+                            return (
+                              <tr key={item.product_id} className={i % 2 === 0 ? '' : 'bg-white/[0.02]'}>
+                                <td className="py-2 px-3">
+                                  <span className="text-white">{item.product_name}</span>
+                                  <span className="text-gray-600 text-xs ml-1.5">{item.product_category}</span>
+                                </td>
+                                <td className="text-center py-2 px-3 text-gray-400">{initial}</td>
+                                <td className="text-center py-2 px-3">
+                                  <span className="text-green-400">{sold}</span>
+                                  <span className="text-gray-600 text-xs ml-1">({soldPercent}%)</span>
+                                  {hasFinal && item.sold_by_pos > 0 && item.sold_by_count !== item.sold_by_pos && (
+                                    <span className="text-gray-600 text-[10px] block">
+                                      POS: {item.sold_by_pos}
+                                    </span>
+                                  )}
+                                </td>
+                                <td className="text-center py-2 px-3">
+                                  <span className={remaining === 0 ? 'text-green-400 font-medium' : remaining < 0 ? 'text-red-400 font-medium' : 'text-orange-400'}>
+                                    {remaining}
+                                  </span>
+                                </td>
+                                <td className="text-right py-2 px-3 text-gold">{formatCurrency(revenue)}</td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+
+                    {/* Sell-through rate */}
+                    {stockSummary.totals.initial > 0 && (
+                      <div className="mt-4 p-3 rounded-xl bg-white/[0.03] border border-white/[0.06] flex items-center justify-between">
+                        <span className="text-gray-400 text-sm">Sell-through Rate</span>
+                        <span className="text-xl font-bold text-gold">
+                          {Math.round((stockSummary.totals.sold / stockSummary.totals.initial) * 100)}%
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <p className="text-gray-500 text-sm py-8 text-center">No stock data available</p>
+                )}
+
+                <div className="mt-4 pt-3 border-t border-white/[0.06]">
+                  <button onClick={() => setShowStockSummary(false)} className="btn-outline w-full">Close</button>
+                </div>
+              </motion.div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        {/* Final Count Modal */}
+        <AnimatePresence>
+          {showFinalCount && (
+            <motion.div
+              className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setShowFinalCount(false)}
+            >
+              <motion.div
+                initial={{ opacity: 0, scale: 0.95, y: 10 }}
+                animate={{ opacity: 1, scale: 1, y: 0 }}
+                exit={{ opacity: 0, scale: 0.95, y: 10 }}
+                transition={{ duration: 0.2 }}
+                onClick={e => e.stopPropagation()}
+                className="card w-full max-w-lg max-h-[80vh] flex flex-col"
+              >
+                <div className="mb-4">
+                  <h3 className="font-semibold text-emerald-400 text-sm">Count Remaining Stock</h3>
+                  <p className="text-xs text-gray-500 mt-0.5">
+                    Enter how many of each product you have left. The system will calculate what was sold.
+                  </p>
+                </div>
+
+                <div className="overflow-y-auto flex-1 -mx-1 px-1 space-y-4">
+                  {(() => {
+                    const cats: Record<string, StockItem[]> = {};
+                    stockItems.forEach(si => {
+                      const cat = si.product_category || 'Other';
+                      if (!cats[cat]) cats[cat] = [];
+                      cats[cat].push(si);
+                    });
+                    return Object.entries(cats).map(([cat, items]) => (
+                      <div key={cat}>
+                        <p className="section-title text-gray-600 mb-2">{cat}</p>
+                        <div className="space-y-1.5">
+                          {items.map(si => {
+                            const initial = parseInt(String(si.initial_quantity));
+                            const current = finalCountForm[si.product_id] ?? initial;
+                            const sold = initial - current;
+                            return (
+                              <div key={si.product_id} className="flex items-center justify-between py-1.5 px-2 rounded-xl hover:bg-white/[0.03] transition-colors">
+                                <div className="flex-1">
+                                  <span className="text-sm text-white">{si.product_name}</span>
+                                  <span className="text-xs text-gray-600 ml-2">started: {initial}</span>
+                                </div>
+                                <div className="flex items-center gap-2">
+                                  <motion.button
+                                    type="button"
+                                    onClick={() => setFinalCountForm(f => ({ ...f, [si.product_id]: Math.max(0, (f[si.product_id] ?? initial) - 1) }))}
+                                    className="btn-outline !px-2 !py-1 text-sm"
+                                    whileTap={{ scale: 0.9 }}
+                                  >-</motion.button>
+                                  <input
+                                    type="number"
+                                    value={finalCountForm[si.product_id] ?? initial}
+                                    onChange={e => setFinalCountForm(f => ({ ...f, [si.product_id]: Math.max(0, parseInt(e.target.value) || 0) }))}
+                                    className="w-14 text-center text-sm"
+                                    min="0"
+                                  />
+                                  <motion.button
+                                    type="button"
+                                    onClick={() => setFinalCountForm(f => ({ ...f, [si.product_id]: (f[si.product_id] ?? initial) + 1 }))}
+                                    className="btn-outline !px-2 !py-1 text-sm"
+                                    whileTap={{ scale: 0.9 }}
+                                  >+</motion.button>
+                                  {sold > 0 && (
+                                    <span className="text-green-400 text-xs font-medium w-16 text-right">
+                                      {sold} sold
+                                    </span>
+                                  )}
+                                  {sold === 0 && (
+                                    <span className="text-gray-600 text-xs w-16 text-right">-</span>
+                                  )}
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    ));
+                  })()}
+                </div>
+
+                {/* Live total preview */}
+                <div className="mt-3 p-2.5 rounded-xl bg-white/[0.03] border border-white/[0.06] flex items-center justify-between text-sm">
+                  <span className="text-gray-400">Total sold by count:</span>
+                  <span className="text-green-400 font-bold text-lg">
+                    {stockItems.reduce((sum, si) => {
+                      const initial = parseInt(String(si.initial_quantity));
+                      const final_ = finalCountForm[si.product_id] ?? initial;
+                      return sum + Math.max(0, initial - final_);
+                    }, 0)}
+                  </span>
+                </div>
+
+                <div className="flex gap-2 mt-4 pt-3 border-t border-white/[0.06]">
+                  <motion.button
+                    onClick={saveFinalCount}
+                    disabled={savingFinalCount}
+                    className="flex-1 py-2.5 px-4 rounded-xl text-sm font-semibold transition-all duration-200 bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 hover:bg-emerald-500/25 disabled:opacity-50"
+                    whileTap={{ scale: 0.97 }}
+                  >
+                    {savingFinalCount ? 'Saving...' : 'Save Final Count'}
+                  </motion.button>
+                  <button onClick={() => setShowFinalCount(false)} className="btn-outline flex-1">Cancel</button>
+                </div>
+              </motion.div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
         {/* Stats Bar */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
           {[
@@ -423,21 +892,38 @@ export default function SessionView() {
                   <div key={cat} className="mb-4">
                     <p className="section-title text-gray-600 mb-2">{cat}</p>
                     <div className="grid grid-cols-2 gap-2">
-                      {prods.map((p, i) => (
-                        <motion.button
-                          key={p.id}
-                          onClick={() => selectProduct(p)}
-                          className="card-hover text-left"
-                          initial={{ opacity: 0, scale: 0.95 }}
-                          animate={{ opacity: 1, scale: 1 }}
-                          transition={{ delay: i * 0.04, duration: 0.3 }}
-                          whileHover={{ scale: 1.02 }}
-                          whileTap={{ scale: 0.97 }}
-                        >
-                          <p className="font-medium text-white text-sm">{p.name}</p>
-                          <p className="text-gold text-sm">{formatCurrency(parseFloat(String(p.default_price)))}</p>
-                        </motion.button>
-                      ))}
+                      {prods.map((p, i) => {
+                        const stock = stockMap[p.id];
+                        const outOfStock = stock && stock.remaining <= 0;
+                        return (
+                          <motion.button
+                            key={p.id}
+                            onClick={() => !outOfStock && selectProduct(p)}
+                            className={`card-hover text-left relative ${outOfStock ? 'opacity-40 cursor-not-allowed' : ''}`}
+                            initial={{ opacity: 0, scale: 0.95 }}
+                            animate={{ opacity: outOfStock ? 0.4 : 1, scale: 1 }}
+                            transition={{ delay: i * 0.04, duration: 0.3 }}
+                            whileHover={outOfStock ? {} : { scale: 1.02 }}
+                            whileTap={outOfStock ? {} : { scale: 0.97 }}
+                          >
+                            <p className="font-medium text-white text-sm">{p.name}</p>
+                            <div className="flex items-center justify-between">
+                              <p className="text-gold text-sm">{formatCurrency(parseFloat(String(p.default_price)))}</p>
+                              {stock && (
+                                <span className={`text-xs font-medium px-1.5 py-0.5 rounded-md ${
+                                  stock.remaining <= 0
+                                    ? 'bg-red-500/15 text-red-400 border border-red-500/20'
+                                    : stock.remaining <= 2
+                                    ? 'bg-orange-500/15 text-orange-400 border border-orange-500/20'
+                                    : 'bg-green-500/15 text-green-400 border border-green-500/20'
+                                }`}>
+                                  {stock.remaining <= 0 ? 'Sold out' : `${stock.remaining} left`}
+                                </span>
+                              )}
+                            </div>
+                          </motion.button>
+                        );
+                      })}
                     </div>
                   </div>
                 ))}
@@ -463,6 +949,19 @@ export default function SessionView() {
                       Cancel
                     </button>
                   </div>
+
+                  {/* Stock warning */}
+                  {stockMap[selectedProduct.id] && (
+                    <div className={`text-xs px-2 py-1 rounded-lg ${
+                      stockMap[selectedProduct.id].remaining <= 0
+                        ? 'bg-red-500/10 text-red-400 border border-red-500/20'
+                        : stockMap[selectedProduct.id].remaining <= 2
+                        ? 'bg-orange-500/10 text-orange-400 border border-orange-500/20'
+                        : 'bg-white/[0.03] text-gray-400 border border-white/[0.06]'
+                    }`}>
+                      Stock: {stockMap[selectedProduct.id].remaining} remaining of {stockMap[selectedProduct.id].initial}
+                    </div>
+                  )}
 
                   <div className="flex gap-3">
                     <div className="flex-1">
@@ -560,6 +1059,74 @@ export default function SessionView() {
                 </motion.div>
               )}
             </AnimatePresence>
+
+            {/* Stock Setup Button */}
+            <div className="mb-3">
+              <button
+                onClick={openStockSetup}
+                className={`w-full py-2.5 px-4 rounded-xl text-sm font-medium transition-all duration-200 flex items-center justify-between ${
+                  hasStock
+                    ? 'bg-purple-500/10 text-purple-400 border border-purple-500/20'
+                    : 'text-gray-400 border border-white/[0.06] hover:border-purple-500/20 hover:text-purple-400'
+                }`}
+              >
+                <span className="flex items-center gap-2">
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4" />
+                  </svg>
+                  {hasStock ? 'Edit Starting Stock' : 'Set Starting Stock'}
+                </span>
+                {hasStock && (
+                  <span className="text-xs text-gray-500">
+                    {stockItems.reduce((sum, si) => sum + parseInt(String(si.initial_quantity)), 0)} items tracked
+                  </span>
+                )}
+              </button>
+            </div>
+
+            {/* Count Remaining Stock Button (only when stock is set) */}
+            {hasStock && (
+              <div className="mb-3">
+                <button
+                  onClick={openFinalCount}
+                  className={`w-full py-2.5 px-4 rounded-xl text-sm font-medium transition-all duration-200 flex items-center justify-between ${
+                    hasFinalCounts
+                      ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
+                      : 'text-gray-400 border border-white/[0.06] hover:border-emerald-500/20 hover:text-emerald-400'
+                  }`}
+                >
+                  <span className="flex items-center gap-2">
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" />
+                    </svg>
+                    {hasFinalCounts ? 'Edit Final Stock Count' : 'Count Remaining Stock'}
+                  </span>
+                  {hasFinalCounts && (
+                    <span className="text-xs text-gray-500">Counted</span>
+                  )}
+                </button>
+              </div>
+            )}
+
+            {/* Stock Summary Button (only shown when stock is set) */}
+            {hasStock && (
+              <div className="mb-3">
+                <button
+                  onClick={openStockSummary}
+                  className="w-full py-2.5 px-4 rounded-xl text-sm font-medium transition-all duration-200 flex items-center justify-between bg-orange-500/10 text-orange-400 border border-orange-500/20 hover:bg-orange-500/15"
+                >
+                  <span className="flex items-center gap-2">
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+                    </svg>
+                    Stock vs Sales Summary
+                  </span>
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                  </svg>
+                </button>
+              </div>
+            )}
 
             {/* Card Fee Toggle */}
             <div className="mb-4">
