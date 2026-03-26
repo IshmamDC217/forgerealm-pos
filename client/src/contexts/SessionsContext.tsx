@@ -1,6 +1,7 @@
 import { createContext, useContext, useState, useCallback, useEffect, type ReactNode } from 'react';
 import type { Session } from '../types';
 import { apiGet } from '../utils/api';
+import { getSocket } from '../utils/socket';
 
 interface SessionsContextValue {
   sessions: Session[];
@@ -27,6 +28,26 @@ export function SessionsProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     refreshSessions();
+  }, [refreshSessions]);
+
+  // Real-time: refresh session list on any session/sale change
+  useEffect(() => {
+    const socket = getSocket();
+    const refresh = () => { refreshSessions(); };
+    socket.on('session:created', refresh);
+    socket.on('session:updated', refresh);
+    socket.on('session:deleted', refresh);
+    socket.on('sale:created', refresh);
+    socket.on('sale:updated', refresh);
+    socket.on('sale:deleted', refresh);
+    return () => {
+      socket.off('session:created', refresh);
+      socket.off('session:updated', refresh);
+      socket.off('session:deleted', refresh);
+      socket.off('sale:created', refresh);
+      socket.off('sale:updated', refresh);
+      socket.off('sale:deleted', refresh);
+    };
   }, [refreshSessions]);
 
   return (

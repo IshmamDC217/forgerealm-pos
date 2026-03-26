@@ -1,5 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { query } from '../db';
+import { getIO } from '../socket';
 
 const router = Router();
 
@@ -30,7 +31,9 @@ router.post('/', async (req: Request, res: Response) => {
        RETURNING *`,
       [name, default_price, image_url || null, category || null]
     );
-    res.status(201).json(result.rows[0]);
+    const created = result.rows[0];
+    res.status(201).json(created);
+    getIO().emit('product:created', created);
   } catch (err) {
     console.error('Error creating product:', err);
     res.status(500).json({ error: 'Failed to create product' });
@@ -69,7 +72,9 @@ router.patch('/:id', async (req: Request, res: Response) => {
       res.status(404).json({ error: 'Product not found' });
       return;
     }
-    res.json(result.rows[0]);
+    const updated = result.rows[0];
+    res.json(updated);
+    getIO().emit('product:updated', updated);
   } catch (err) {
     console.error('Error updating product:', err);
     res.status(500).json({ error: 'Failed to update product' });
@@ -89,6 +94,7 @@ router.delete('/:id', async (req: Request, res: Response) => {
       return;
     }
     res.json({ message: 'Product deleted', id });
+    getIO().emit('product:deleted', { id });
   } catch (err) {
     console.error('Error deleting product:', err);
     res.status(500).json({ error: 'Failed to delete product' });

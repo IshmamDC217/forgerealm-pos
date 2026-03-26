@@ -3,6 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useSessions } from '../contexts/SessionsContext';
 import { apiGet, apiPost, apiPatch, apiDelete, apiPut } from '../utils/api';
+import { getSocket } from '../utils/socket';
 import { formatCurrency } from '../utils/currency';
 import type { Session, Product, Sale, SessionStats, StockItem, StockSummary } from '../types';
 import PageTransition from '../components/PageTransition';
@@ -65,6 +66,97 @@ export default function SessionView() {
     setLoading(true);
     fetchData();
   }, [fetchData]);
+
+  // Real-time: join session room and listen for changes from other clients
+  useEffect(() => {
+    if (!id) return;
+    const socket = getSocket();
+    socket.emit('join-session', id);
+
+    const onSaleCreated = (sale: Sale) => {
+      setSales(prev => {
+        if (prev.some(s => s.id === sale.id)) return prev;
+        return [sale, ...prev];
+      });
+      setSession(prev => {
+        if (!prev) return prev;
+        const stats = prev.stats || { total_revenue: 0, total_units: 0, total_sales: 0, best_seller: null };
+        return { ...prev, stats: { ...stats, total_revenue: stats.total_revenue + sale.quantity * parseFloat(String(sale.price_charged)), total_units: stats.total_units + sale.quantity, total_sales: stats.total_sales + 1 } };
+      });
+      setStockItems(prev => prev.map(si =>
+        si.product_id === sale.product_id
+          ? { ...si, total_sold: parseInt(String(si.total_sold)) + sale.quantity }
+          : si
+      ));
+    };
+
+    const onSaleUpdated = (sale: Sale) => {
+      setSales(prev => {
+        const old = prev.find(s => s.id === sale.id);
+        if (!old) return prev;
+        const oldTotal = old.quantity * parseFloat(String(old.price_charged));
+        const newTotal = sale.quantity * parseFloat(String(sale.price_charged));
+        const oldUnits = old.quantity;
+        const newUnits = sale.quantity;
+        setSession(p => {
+          if (!p) return p;
+          const stats = p.stats || { total_revenue: 0, total_units: 0, total_sales: 0, best_seller: null };
+          return { ...p, stats: { ...stats, total_revenue: stats.total_revenue - oldTotal + newTotal, total_units: stats.total_units - oldUnits + newUnits } };
+        });
+        setStockItems(si => si.map(item =>
+          item.product_id === sale.product_id
+            ? { ...item, total_sold: parseInt(String(item.total_sold)) - oldUnits + newUnits }
+            : item
+        ));
+        return prev.map(s => s.id === sale.id ? { ...s, ...sale } : s);
+      });
+    };
+
+    const onSaleDeleted = (data: { id: string; session_id: string; product_id: string; quantity: number; price_charged: string }) => {
+      setSales(prev => {
+        const sale = prev.find(s => s.id === data.id);
+        if (!sale) return prev;
+        setSession(p => {
+          if (!p) return p;
+          const stats = p.stats || { total_revenue: 0, total_units: 0, total_sales: 0, best_seller: null };
+          return { ...p, stats: { ...stats, total_revenue: stats.total_revenue - sale.quantity * parseFloat(String(sale.price_charged)), total_units: stats.total_units - sale.quantity, total_sales: stats.total_sales - 1 } };
+        });
+        setStockItems(si => si.map(item =>
+          item.product_id === sale.product_id
+            ? { ...item, total_sold: Math.max(0, parseInt(String(item.total_sold)) - sale.quantity) }
+            : item
+        ));
+        return prev.filter(s => s.id !== data.id);
+      });
+    };
+
+    const onStockUpdated = (data: { sessionId: string; items: StockItem[] }) => {
+      if (data.sessionId === id) {
+        setStockItems(data.items);
+      }
+    };
+
+    const onSessionUpdated = (data: Session) => {
+      if (data.id === id) {
+        setSession(prev => prev ? { ...prev, ...data } : prev);
+      }
+    };
+
+    socket.on('sale:created', onSaleCreated);
+    socket.on('sale:updated', onSaleUpdated);
+    socket.on('sale:deleted', onSaleDeleted);
+    socket.on('stock:updated', onStockUpdated);
+    socket.on('session:updated', onSessionUpdated);
+
+    return () => {
+      socket.emit('leave-session', id);
+      socket.off('sale:created', onSaleCreated);
+      socket.off('sale:updated', onSaleUpdated);
+      socket.off('sale:deleted', onSaleDeleted);
+      socket.off('stock:updated', onStockUpdated);
+      socket.off('session:updated', onSessionUpdated);
+    };
+  }, [id]);
 
   // Build a map of product_id -> remaining stock
   const stockMap = useMemo(() => {

@@ -1,5 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { query } from '../db';
+import { getIO } from '../socket';
 
 const router = Router();
 
@@ -36,7 +37,9 @@ router.post('/', async (req: Request, res: Response) => {
        RETURNING *`,
       [name, location || null, date || new Date(), notes || null]
     );
-    res.status(201).json(result.rows[0]);
+    const created = result.rows[0];
+    res.status(201).json(created);
+    getIO().emit('session:created', created);
   } catch (err) {
     console.error('Error creating session:', err);
     res.status(500).json({ error: 'Failed to create session' });
@@ -130,7 +133,9 @@ router.patch('/:id', async (req: Request, res: Response) => {
       res.status(404).json({ error: 'Session not found' });
       return;
     }
-    res.json(result.rows[0]);
+    const updated = result.rows[0];
+    res.json(updated);
+    getIO().emit('session:updated', updated);
   } catch (err) {
     console.error('Error updating session:', err);
     res.status(500).json({ error: 'Failed to update session' });
@@ -150,6 +155,7 @@ router.delete('/:id', async (req: Request, res: Response) => {
       return;
     }
     res.json({ message: 'Session deleted', id });
+    getIO().emit('session:deleted', { id });
   } catch (err) {
     console.error('Error deleting session:', err);
     res.status(500).json({ error: 'Failed to delete session' });

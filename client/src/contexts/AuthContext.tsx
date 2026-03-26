@@ -1,4 +1,5 @@
 import { createContext, useContext, useState, useEffect, ReactNode } from 'react';
+import { getSocket, disconnectSocket } from '../utils/socket';
 
 interface AuthContextValue {
   isAuthenticated: boolean;
@@ -33,6 +34,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       .then(data => {
         setIsAuthenticated(true);
         setUsername(data.username);
+        getSocket();
       })
       .catch(() => {
         localStorage.removeItem('token');
@@ -58,9 +60,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     localStorage.setItem('username', data.username);
     setIsAuthenticated(true);
     setUsername(data.username);
+    // Connect socket after login
+    getSocket();
   };
 
   const logout = () => {
+    disconnectSocket();
     localStorage.removeItem('token');
     localStorage.removeItem('username');
     setIsAuthenticated(false);

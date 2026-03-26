@@ -1,5 +1,6 @@
 import 'dotenv/config';
 import path from 'path';
+import http from 'http';
 import express, { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
 
@@ -10,9 +11,13 @@ import productsRouter from './routes/products';
 import salesRouter from './routes/sales';
 import exportRouter from './routes/export';
 import stockRouter from './routes/stock';
+import { initSocket } from './socket';
 
 const app = express();
+const server = http.createServer(app);
 const PORT = process.env.PORT || 3001;
+
+initSocket(server);
 
 app.use(cors());
 app.use(express.json());
@@ -45,6 +50,6 @@ app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
   res.status(500).json({ error: 'Internal server error' });
 });
 
-app.listen(PORT, () => {
+server.listen(PORT, () => {
   console.log(`ForgeRealm POS server running on port ${PORT}`);
 });

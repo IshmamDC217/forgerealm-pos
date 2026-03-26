@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { apiGet, apiPost, apiPatch, apiDelete } from '../utils/api';
 import { formatCurrency } from '../utils/currency';
+import { getSocket } from '../utils/socket';
 import type { Product } from '../types';
 import PageTransition from '../components/PageTransition';
 import HomeButton from '../components/HomeButton';
@@ -23,6 +24,28 @@ export default function Products() {
     apiGet<Product[]>('/products')
       .then(data => { setProducts(data); setLoading(false); })
       .catch(() => setLoading(false));
+  }, []);
+
+  // Real-time: listen for product changes from other clients
+  useEffect(() => {
+    const socket = getSocket();
+    const onCreated = (product: Product) => {
+      setProducts(prev => prev.some(p => p.id === product.id) ? prev : [...prev, product]);
+    };
+    const onUpdated = (product: Product) => {
+      setProducts(prev => prev.map(p => p.id === product.id ? product : p));
+    };
+    const onDeleted = (data: { id: string }) => {
+      setProducts(prev => prev.filter(p => p.id !== data.id));
+    };
+    socket.on('product:created', onCreated);
+    socket.on('product:updated', onUpdated);
+    socket.on('product:deleted', onDeleted);
+    return () => {
+      socket.off('product:created', onCreated);
+      socket.off('product:updated', onUpdated);
+      socket.off('product:deleted', onDeleted);
+    };
   }, []);
 
   const resetForm = () => {

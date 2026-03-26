@@ -1,5 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { query } from '../db';
+import { getIO } from '../socket';
 
 const router = Router();
 
@@ -46,7 +47,9 @@ router.post('/', async (req: Request, res: Response) => {
        WHERE sa.id = $1`,
       [result.rows[0].id]
     );
-    res.status(201).json(sale.rows[0]);
+    const created = sale.rows[0];
+    res.status(201).json(created);
+    getIO().to(`session:${session_id}`).emit('sale:created', created);
   } catch (err) {
     console.error('Error recording sale:', err);
     res.status(500).json({ error: 'Failed to record sale' });
@@ -92,7 +95,9 @@ router.patch('/:id', async (req: Request, res: Response) => {
        WHERE sa.id = $1`,
       [id]
     );
-    res.json(sale.rows[0]);
+    const updated = sale.rows[0];
+    res.json(updated);
+    getIO().to(`session:${updated.session_id}`).emit('sale:updated', updated);
   } catch (err) {
     console.error('Error updating sale:', err);
     res.status(500).json({ error: 'Failed to update sale' });
@@ -104,14 +109,16 @@ router.delete('/:id', async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
     const result = await query(
-      'DELETE FROM sales WHERE id = $1 RETURNING id',
+      'DELETE FROM sales WHERE id = $1 RETURNING id, session_id, product_id, quantity, price_charged',
       [id]
     );
     if (result.rows.length === 0) {
       res.status(404).json({ error: 'Sale not found' });
       return;
     }
+    const deleted = result.rows[0];
     res.json({ message: 'Sale deleted', id });
+    getIO().to(`session:${deleted.session_id}`).emit('sale:deleted', deleted);
   } catch (err) {
     console.error('Error deleting sale:', err);
     res.status(500).json({ error: 'Failed to delete sale' });
