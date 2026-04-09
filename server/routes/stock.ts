@@ -31,6 +31,78 @@ router.get('/session/:sessionId', async (req: Request, res: Response) => {
   }
 });
 
+// GET /carryover/:sessionId — get remaining stock from the most recent prior session
+// Returns one entry per product that had stock in the previous session, with its remaining qty.
+router.get('/carryover/:sessionId', async (req: Request, res: Response) => {
+  try {
+    const { sessionId } = req.params;
+
+    // Find the current session's date so we look strictly *before* it
+    const currentResult = await query(
+      'SELECT date, created_at FROM sessions WHERE id = $1',
+      [sessionId]
+    );
+    if (currentResult.rows.length === 0) {
+      res.status(404).json({ error: 'Session not found' });
+      return;
+    }
+    const current = currentResult.rows[0];
+
+    // Find the most recent prior session that has stock entries
+    const priorResult = await query(
+      `SELECT s.id, s.name, s.date
+       FROM sessions s
+       WHERE s.id != $1
+         AND EXISTS (SELECT 1 FROM session_stock ss WHERE ss.session_id = s.id)
+         AND (s.date < $2 OR (s.date = $2 AND s.created_at < $3))
+       ORDER BY s.date DESC, s.created_at DESC
+       LIMIT 1`,
+      [sessionId, current.date, current.created_at]
+    );
+
+    if (priorResult.rows.length === 0) {
+      res.json({ previous_session: null, items: [] });
+      return;
+    }
+
+    const prior = priorResult.rows[0];
+
+    // For each stock item in the prior session, compute remaining
+    // remaining = final_quantity if set, else initial - total_sold
+    const items = await query(
+      `SELECT ss.product_id,
+              p.name AS product_name,
+              p.category AS product_category,
+              ss.initial_quantity,
+              ss.final_quantity,
+              COALESCE(sold.total_sold, 0) AS total_sold,
+              CASE
+                WHEN ss.final_quantity IS NOT NULL THEN ss.final_quantity
+                ELSE GREATEST(ss.initial_quantity - COALESCE(sold.total_sold, 0), 0)
+              END AS remaining
+       FROM session_stock ss
+       JOIN products p ON p.id = ss.product_id
+       LEFT JOIN (
+         SELECT product_id, SUM(quantity) AS total_sold
+         FROM sales
+         WHERE session_id = $1
+         GROUP BY product_id
+       ) sold ON sold.product_id = ss.product_id
+       WHERE ss.session_id = $1
+       ORDER BY p.category, p.name`,
+      [prior.id]
+    );
+
+    res.json({
+      previous_session: { id: prior.id, name: prior.name, date: prior.date },
+      items: items.rows,
+    });
+  } catch (err) {
+    console.error('Error fetching carryover:', err);
+    res.status(500).json({ error: 'Failed to fetch carryover stock' });
+  }
+});
+
 // PUT /session/:sessionId — bulk set stock for a session (upsert)
 router.put('/session/:sessionId', async (req: Request, res: Response) => {
   try {

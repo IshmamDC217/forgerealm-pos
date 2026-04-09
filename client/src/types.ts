@@ -71,6 +71,19 @@ export interface StockSummaryItem {
   remaining: number;
 }
 
+export interface StockCarryover {
+  previous_session: { id: string; name: string; date: string } | null;
+  items: {
+    product_id: string;
+    product_name: string;
+    product_category: string | null;
+    initial_quantity: number;
+    final_quantity: number | null;
+    total_sold: number;
+    remaining: number;
+  }[];
+}
+
 export interface StockSummary {
   items: StockSummaryItem[];
   totals: {

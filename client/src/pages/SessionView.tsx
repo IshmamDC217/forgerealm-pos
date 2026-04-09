@@ -5,7 +5,7 @@ import { useSessions } from '../contexts/SessionsContext';
 import { apiGet, apiPost, apiPatch, apiDelete, apiPut } from '../utils/api';
 import { getSocket } from '../utils/socket';
 import { formatCurrency } from '../utils/currency';
-import type { Session, Product, Sale, SessionStats, StockItem, StockSummary } from '../types';
+import type { Session, Product, Sale, SessionStats, StockItem, StockSummary, StockCarryover } from '../types';
 import PageTransition from '../components/PageTransition';
 import HomeButton from '../components/HomeButton';
 
@@ -35,6 +35,8 @@ export default function SessionView() {
   const [showStockSetup, setShowStockSetup] = useState(false);
   const [stockForm, setStockForm] = useState<Record<string, number>>({});
   const [savingStock, setSavingStock] = useState(false);
+  const [carryoverInfo, setCarryoverInfo] = useState<StockCarryover | null>(null);
+  const [loadingCarryover, setLoadingCarryover] = useState(false);
   const [showStockSummary, setShowStockSummary] = useState(false);
   const [stockSummary, setStockSummary] = useState<StockSummary | null>(null);
   const [loadingSummary, setLoadingSummary] = useState(false);
@@ -362,7 +364,7 @@ export default function SessionView() {
   };
 
   // Stock setup handlers
-  const openStockSetup = () => {
+  const openStockSetup = async () => {
     const form: Record<string, number> = {};
     for (const p of products) {
       const existing = stockItems.find(si => si.product_id === p.id);
@@ -370,6 +372,35 @@ export default function SessionView() {
     }
     setStockForm(form);
     setShowStockSetup(true);
+
+    // Fetch carryover info in the background so the button can be enabled
+    if (id) {
+      setLoadingCarryover(true);
+      try {
+        const data = await apiGet<StockCarryover>(`/stock/carryover/${id}`);
+        setCarryoverInfo(data);
+      } catch {
+        setCarryoverInfo(null);
+      } finally {
+        setLoadingCarryover(false);
+      }
+    }
+  };
+
+  const applyCarryover = () => {
+    if (!carryoverInfo || !carryoverInfo.previous_session) return;
+    setStockForm(prev => {
+      const next = { ...prev };
+      // Reset everything to 0 first so old values don't linger
+      for (const p of products) {
+        next[p.id] = 0;
+      }
+      // Then set carried-over remaining quantities
+      for (const item of carryoverInfo.items) {
+        next[item.product_id] = parseInt(String(item.remaining)) || 0;
+      }
+      return next;
+    });
   };
 
   const saveStock = async () => {
@@ -593,10 +624,10 @@ export default function SessionView() {
                 onClick={e => e.stopPropagation()}
                 className="card w-full max-w-lg max-h-[80vh] flex flex-col"
               >
-                <div className="flex items-center justify-between mb-4">
+                <div className="flex items-center justify-between mb-3">
                   <div>
                     <h3 className="font-semibold text-gold text-sm">Set Starting Stock</h3>
-                    <p className="text-xs text-gray-500 mt-0.5">How many of each product are you bringing to this stall?</p>
+                    <p className="text-xs text-gray-500 mt-0.5">These values <span className="text-gray-400">replace</span> any existing stock — they don't add to it.</p>
                   </div>
                   <button
                     onClick={() => {
@@ -609,6 +640,31 @@ export default function SessionView() {
                     Clear All
                   </button>
                 </div>
+
+                {/* Carry over from previous session */}
+                {carryoverInfo?.previous_session && (
+                  <div className="mb-3 p-2.5 rounded-xl bg-gold/5 border border-gold/20 flex items-center justify-between gap-3">
+                    <div className="min-w-0">
+                      <p className="text-xs text-gold font-medium truncate">Carry over from previous session</p>
+                      <p className="text-[11px] text-gray-500 truncate">
+                        {carryoverInfo.previous_session.name} · {carryoverInfo.items.reduce((sum, i) => sum + (parseInt(String(i.remaining)) || 0), 0)} units remaining
+                      </p>
+                    </div>
+                    <motion.button
+                      type="button"
+                      onClick={applyCarryover}
+                      className="btn-outline !px-3 !py-1.5 text-xs whitespace-nowrap"
+                      whileTap={{ scale: 0.96 }}
+                    >
+                      Apply
+                    </motion.button>
+                  </div>
+                )}
+                {loadingCarryover && !carryoverInfo && (
+                  <div className="mb-3 p-2 rounded-xl bg-white/[0.02] border border-white/[0.06] text-[11px] text-gray-500 text-center">
+                    Checking for previous session…
+                  </div>
+                )}
 
                 <div className="overflow-y-auto flex-1 -mx-1 px-1 space-y-4">
                   {Object.entries(stockCategories).map(([cat, prods]) => (
