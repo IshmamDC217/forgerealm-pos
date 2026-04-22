@@ -15,6 +15,9 @@
     "seed": "cd server && npm run seed",
     "create-user": "cd server && npm run create-user"
   },
+  "dependencies": {
+    "serverless-http": "^3.2.0"
+  },
   "devDependencies": {
     "concurrently": "^9.1.2"
   },

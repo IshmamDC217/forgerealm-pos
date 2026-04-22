@@ -1,5 +1,5 @@
 import 'dotenv/config';
-import bcrypt from 'bcrypt';
+import bcrypt from 'bcryptjs';
 import { pool } from './index';
 
 const USERNAME = process.argv[2] || process.env.POS_ADMIN_USER || 'admin';

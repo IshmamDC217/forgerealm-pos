@@ -1,6 +1,5 @@
 import { Router, Request, Response } from 'express';
 import { query } from '../db';
-import { getIO } from '../socket';
 
 const router = Router();
 
@@ -162,7 +161,6 @@ router.put('/session/:sessionId', async (req: Request, res: Response) => {
       [sessionId]
     );
     res.json(result.rows);
-    getIO().to(`session:${sessionId}`).emit('stock:updated', { sessionId, items: result.rows });
   } catch (err) {
     console.error('Error setting stock:', err);
     res.status(500).json({ error: 'Failed to set stock' });
@@ -207,7 +205,6 @@ router.put('/session/:sessionId/final', async (req: Request, res: Response) => {
       [sessionId]
     );
     res.json(result.rows);
-    getIO().to(`session:${sessionId}`).emit('stock:updated', { sessionId, items: result.rows });
   } catch (err) {
     console.error('Error saving final stock:', err);
     res.status(500).json({ error: 'Failed to save final stock counts' });

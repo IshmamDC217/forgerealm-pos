@@ -1,5 +1,6 @@
 import { createContext, useContext, useState, useEffect, ReactNode } from 'react';
-import { getSocket, disconnectSocket } from '../utils/socket';
+import { API_BASE } from '../utils/config';
+import { isNetworkError, setOnline } from '../utils/offline';
 
 interface AuthContextValue {
   isAuthenticated: boolean;
@@ -23,28 +24,50 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       return;
     }
 
-    // Verify token is still valid
-    fetch('/api/auth/me', {
+    // Optimistically authenticate from cached credentials so we can boot
+    // offline. We still verify against the server in the background — if it
+    // explicitly says the token is invalid (401) we log out, but a network
+    // failure leaves the user signed in with their cached state.
+    const cachedUsername = localStorage.getItem('username');
+    if (cachedUsername) {
+      setIsAuthenticated(true);
+      setUsername(cachedUsername);
+    }
+
+    fetch(`${API_BASE}/api/auth/me`, {
       headers: { Authorization: `Bearer ${token}` },
     })
       .then(res => {
-        if (res.ok) return res.json();
-        throw new Error('Invalid token');
+        if (res.status === 401) {
+          // Token actually invalid → sign out
+          localStorage.removeItem('token');
+          localStorage.removeItem('username');
+          setIsAuthenticated(false);
+          setUsername(null);
+          return null;
+        }
+        if (!res.ok) throw new Error('auth check failed');
+        return res.json();
       })
       .then(data => {
-        setIsAuthenticated(true);
-        setUsername(data.username);
-        getSocket();
+        if (data) {
+          setIsAuthenticated(true);
+          setUsername(data.username);
+          localStorage.setItem('username', data.username);
+          setOnline(true);
+        }
       })
-      .catch(() => {
-        localStorage.removeItem('token');
-        localStorage.removeItem('username');
+      .catch((err) => {
+        // Network failure — stay with cached credentials, mark offline
+        if (isNetworkError(err)) {
+          setOnline(false);
+        }
       })
       .finally(() => setLoading(false));
   }, []);
 
   const login = async (username: string, password: string) => {
-    const res = await fetch('/api/auth/login', {
+    const res = await fetch(`${API_BASE}/api/auth/login`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ username, password }),
@@ -60,12 +83,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     localStorage.setItem('username', data.username);
     setIsAuthenticated(true);
     setUsername(data.username);
-    // Connect socket after login
-    getSocket();
   };
 
   const logout = () => {
-    disconnectSocket();
     localStorage.removeItem('token');
     localStorage.removeItem('username');
     setIsAuthenticated(false);

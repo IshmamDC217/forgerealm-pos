@@ -1,8 +1,8 @@
-import { useState, useEffect } from 'react';
+import { useState, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { apiGet, apiPost, apiPatch, apiDelete } from '../utils/api';
 import { formatCurrency } from '../utils/currency';
-import { getSocket } from '../utils/socket';
+import { usePolling } from '../utils/usePolling';
 import type { Product } from '../types';
 import PageTransition from '../components/PageTransition';
 import HomeButton from '../components/HomeButton';
@@ -20,33 +20,19 @@ export default function Products() {
   const [form, setForm] = useState<ProductForm>({ name: '', default_price: '', category: '' });
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
-    apiGet<Product[]>('/products')
-      .then(data => { setProducts(data); setLoading(false); })
-      .catch(() => setLoading(false));
+  const refresh = useCallback(async () => {
+    try {
+      const data = await apiGet<Product[]>('/products');
+      setProducts(data);
+    } catch {
+      // leave existing list in place on failure
+    } finally {
+      setLoading(false);
+    }
   }, []);
 
-  // Real-time: listen for product changes from other clients
-  useEffect(() => {
-    const socket = getSocket();
-    const onCreated = (product: Product) => {
-      setProducts(prev => prev.some(p => p.id === product.id) ? prev : [...prev, product]);
-    };
-    const onUpdated = (product: Product) => {
-      setProducts(prev => prev.map(p => p.id === product.id ? product : p));
-    };
-    const onDeleted = (data: { id: string }) => {
-      setProducts(prev => prev.filter(p => p.id !== data.id));
-    };
-    socket.on('product:created', onCreated);
-    socket.on('product:updated', onUpdated);
-    socket.on('product:deleted', onDeleted);
-    return () => {
-      socket.off('product:created', onCreated);
-      socket.off('product:updated', onUpdated);
-      socket.off('product:deleted', onDeleted);
-    };
-  }, []);
+  // Products change rarely — 15s poll is more than enough.
+  usePolling(refresh, { intervalMs: 15000 });
 
   const resetForm = () => {
     setForm({ name: '', default_price: '', category: '' });
