@@ -1,0 +1,24 @@
+[build]
+  base    = "."
+  command = "cd server && npm install && cd ../client && npm install && npm run build"
+  publish = "client/dist"
+  functions = "netlify/functions"
+
+[functions]
+  # Bundle TypeScript functions via esbuild; include shared server files so the
+  # wrapped Express app can resolve ../../server/* at runtime.
+  node_bundler = "esbuild"
+  included_files = ["server/**"]
+
+# Route every /api/* request through the single Express handler.
+[[redirects]]
+  from   = "/api/*"
+  to     = "/.netlify/functions/api/api/:splat"
+  status = 200
+  force  = true
+
+# SPA fallback for the React client.
+[[redirects]]
+  from   = "/*"
+  to     = "/index.html"
+  status = 200

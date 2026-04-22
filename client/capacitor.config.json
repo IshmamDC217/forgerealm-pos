@@ -1,0 +1,8 @@
+{
+  "appId": "uk.co.forgerealm.pos",
+  "appName": "ForgeRealm POS",
+  "webDir": "dist",
+  "android": {
+    "allowMixedContent": false
+  }
+}

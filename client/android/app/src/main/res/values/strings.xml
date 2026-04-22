@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">ForgeRealm POS</string>
+    <string name="title_activity_main">ForgeRealm POS</string>
+    <string name="package_name">uk.co.forgerealm.pos</string>
+    <string name="custom_url_scheme">uk.co.forgerealm.pos</string>
+</resources>

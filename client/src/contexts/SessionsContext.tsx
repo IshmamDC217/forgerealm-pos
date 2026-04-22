@@ -1,7 +1,7 @@
-import { createContext, useContext, useState, useCallback, useEffect, type ReactNode } from 'react';
+import { createContext, useContext, useState, useCallback, type ReactNode } from 'react';
 import type { Session } from '../types';
 import { apiGet } from '../utils/api';
-import { getSocket } from '../utils/socket';
+import { usePolling } from '../utils/usePolling';
 
 interface SessionsContextValue {
   sessions: Session[];
@@ -26,29 +26,10 @@ export function SessionsProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
-  useEffect(() => {
-    refreshSessions();
-  }, [refreshSessions]);
-
-  // Real-time: refresh session list on any session/sale change
-  useEffect(() => {
-    const socket = getSocket();
-    const refresh = () => { refreshSessions(); };
-    socket.on('session:created', refresh);
-    socket.on('session:updated', refresh);
-    socket.on('session:deleted', refresh);
-    socket.on('sale:created', refresh);
-    socket.on('sale:updated', refresh);
-    socket.on('sale:deleted', refresh);
-    return () => {
-      socket.off('session:created', refresh);
-      socket.off('session:updated', refresh);
-      socket.off('session:deleted', refresh);
-      socket.off('sale:created', refresh);
-      socket.off('sale:updated', refresh);
-      socket.off('sale:deleted', refresh);
-    };
-  }, [refreshSessions]);
+  // Poll the session list every 10s while the tab is visible. Session-level
+  // data changes slowly (creating/closing a stall day) so a slower cadence is
+  // fine here; per-session views poll more aggressively.
+  usePolling(refreshSessions, { intervalMs: 10000 });
 
   return (
     <SessionsContext.Provider value={{ sessions, loading, refreshSessions }}>

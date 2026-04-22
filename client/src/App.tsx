@@ -9,6 +9,7 @@ import Welcome from './pages/Welcome';
 import SessionView from './pages/SessionView';
 import Products from './pages/Products';
 import Login from './pages/Login';
+import OfflineBanner from './components/OfflineBanner';
 
 function AuthenticatedApp() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -18,6 +19,7 @@ function AuthenticatedApp() {
 
   return (
     <SessionsProvider>
+      <OfflineBanner />
       <div className="min-h-screen bg-navy flex relative overflow-hidden">
         {/* Ambient background glow */}
         <div className="fixed top-0 left-1/2 -translate-x-1/2 w-[800px] h-[600px] bg-gradient-radial pointer-events-none opacity-50" />
@@ -88,7 +90,12 @@ function AppRouter() {
   }
 
   if (!isAuthenticated) {
-    return <Login />;
+    return (
+      <>
+        <OfflineBanner />
+        <Login />
+      </>
+    );
   }
 
   return <AuthenticatedApp />;
