@@ -26,17 +26,17 @@ ForgeRealm POS is a full-stack sales tracking application designed for market st
 
 ## Features
 
-- **Session Management** — Create, edit, close, and delete sales sessions per event or stall
-- **Live Sales Recording** — Tap products from a categorised grid, set quantity & price, and log instantly
-- **Cash & Card Tracking** — Tag each sale as cash or card with a single toggle
-- **SumUp Card Fee Deduction** — One-click toggle to apply 1.69% card processing fees across a session
-- **Real-time Analytics** — Revenue, units sold, best-selling product, and per-product breakdowns
-- **Sale Editing & Undo** — Modify or remove any recorded sale on the fly
-- **Professional Exports** — Download session reports as styled XLSX (with summary + detail sheets) or CSV
-- **Product Catalog** — Manage your product library with names, default prices, and categories
-- **JWT Authentication** — Single-user login with bcrypt-hashed credentials
-- **Animated UI** — Framer Motion page transitions, hover effects, shimmer, and glow animations
-- **Responsive** — Works on desktop and mobile with collapsible sidebar
+- **Session Management**: create, edit, close, and delete sales sessions per event or stall.
+- **Live Sales Recording**: tap products from a categorised grid, set quantity and price, and log instantly.
+- **Cash & Card Tracking**: tag each sale as cash or card with a single toggle.
+- **SumUp Card Fee Deduction**: one-click toggle to apply 1.69% card processing fees across a session.
+- **Real-time Analytics**: revenue, units sold, best-selling product, and per-product breakdowns.
+- **Sale Editing & Undo**: modify or remove any recorded sale on the fly.
+- **Professional Exports**: download session reports as styled XLSX (with summary and detail sheets) or CSV.
+- **Product Catalog**: manage your product library with names, default prices, and categories.
+- **JWT Authentication**: single-user login with bcrypt-hashed credentials.
+- **Animated UI**: Framer Motion page transitions, hover effects, shimmer, and glow animations.
+- **Responsive**: works on desktop and mobile with a collapsible sidebar.
 
 ## Tech Stack
 
@@ -54,11 +54,11 @@ ForgeRealm POS is a full-stack sales tracking application designed for market st
 Built around a **navy & gold** palette with glassmorphism effects:
 
 ```
-Navy        #0a1628     — primary background
-Navy Light  #0f1d32     — elevated surfaces
-Gold        #d4a843     — accent, buttons, branding
-Gold Light  #e4c373     — hover states
-Surface     #111827     — cards, panels
+Navy        #0a1628     primary background
+Navy Light  #0f1d32     elevated surfaces
+Gold        #d4a843     accent, buttons, branding
+Gold Light  #e4c373     hover states
+Surface     #111827     cards, panels
 Glass       rgba(255,255,255,0.03) + backdrop-blur
 ```
 
