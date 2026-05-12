@@ -1,5 +1,5 @@
 import { Router, Request, Response } from 'express';
-import { query } from '../db';
+import { pool, query } from '../db';
 
 const router = Router();
 
@@ -25,17 +25,17 @@ router.get('/session/:sessionId', async (req: Request, res: Response) => {
 // POST / — record a sale
 router.post('/', async (req: Request, res: Response) => {
   try {
-    const { session_id, product_id, quantity, price_charged, payment_method } = req.body;
+    const { session_id, product_id, quantity, price_charged, payment_method, transaction_id } = req.body;
     if (!session_id || !product_id || !quantity || price_charged === undefined) {
       res.status(400).json({ error: 'session_id, product_id, quantity, and price_charged are required' });
       return;
     }
     const method = payment_method === 'card' ? 'card' : 'cash';
     const result = await query(
-      `INSERT INTO sales (session_id, product_id, quantity, price_charged, payment_method)
-       VALUES ($1, $2, $3, $4, $5)
+      `INSERT INTO sales (session_id, product_id, quantity, price_charged, payment_method, transaction_id)
+       VALUES ($1, $2, $3, $4, $5, $6)
        RETURNING *`,
-      [session_id, product_id, quantity, price_charged, method]
+      [session_id, product_id, quantity, price_charged, method, transaction_id || null]
     );
 
     // Return with product info
@@ -58,7 +58,7 @@ router.post('/', async (req: Request, res: Response) => {
 router.patch('/:id', async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-    const { quantity, price_charged, payment_method } = req.body;
+    const { quantity, price_charged, payment_method, product_id, timestamp } = req.body;
 
     const fields: string[] = [];
     const values: unknown[] = [];
@@ -67,6 +67,8 @@ router.patch('/:id', async (req: Request, res: Response) => {
     if (quantity !== undefined) { fields.push(`quantity = $${idx++}`); values.push(quantity); }
     if (price_charged !== undefined) { fields.push(`price_charged = $${idx++}`); values.push(price_charged); }
     if (payment_method !== undefined) { fields.push(`payment_method = $${idx++}`); values.push(payment_method === 'card' ? 'card' : 'cash'); }
+    if (product_id !== undefined) { fields.push(`product_id = $${idx++}`); values.push(product_id); }
+    if (timestamp !== undefined) { fields.push(`timestamp = $${idx++}`); values.push(timestamp); }
 
     if (fields.length === 0) {
       res.status(400).json({ error: 'No fields to update' });
@@ -101,22 +103,55 @@ router.patch('/:id', async (req: Request, res: Response) => {
   }
 });
 
-// DELETE /:id — undo/delete a sale
+// DELETE /:id — undo/delete a sale. If the sale was a SumUp allocation, also
+// check whether any siblings still exist for the same sumup_transaction_id;
+// if none remain, revert the corresponding pending_transactions row to
+// 'pending' so the user can re-allocate it without it getting stranded.
 router.delete('/:id', async (req: Request, res: Response) => {
+  const client = await pool.connect();
   try {
     const { id } = req.params;
-    const result = await query(
-      'DELETE FROM sales WHERE id = $1 RETURNING id, session_id, product_id, quantity, price_charged',
+    await client.query('BEGIN');
+
+    const deleted = await client.query<{
+      id: string;
+      session_id: string;
+      sumup_transaction_id: string | null;
+    }>(
+      `DELETE FROM sales WHERE id = $1
+       RETURNING id, session_id, sumup_transaction_id`,
       [id]
     );
-    if (result.rows.length === 0) {
+    if (deleted.rows.length === 0) {
+      await client.query('ROLLBACK');
       res.status(404).json({ error: 'Sale not found' });
       return;
     }
+    const sumupTxId = deleted.rows[0].sumup_transaction_id;
+
+    if (sumupTxId) {
+      const remaining = await client.query<{ c: string }>(
+        `SELECT COUNT(*)::text AS c FROM sales WHERE sumup_transaction_id = $1`,
+        [sumupTxId]
+      );
+      if (parseInt(remaining.rows[0].c, 10) === 0) {
+        await client.query(
+          `UPDATE pending_transactions
+             SET status = 'pending', resolved_at = NULL
+           WHERE sumup_transaction_id = $1 AND status = 'allocated'`,
+          [sumupTxId]
+        );
+      }
+    }
+
+    await client.query('COMMIT');
     res.json({ message: 'Sale deleted', id });
   } catch (err) {
+    await client.query('ROLLBACK');
     console.error('Error deleting sale:', err);
     res.status(500).json({ error: 'Failed to delete sale' });
+  } finally {
+    client.release();
   }
 });
 

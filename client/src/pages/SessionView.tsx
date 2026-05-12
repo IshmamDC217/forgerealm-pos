@@ -9,24 +9,31 @@ import { formatCurrency } from '../utils/currency';
 import type { Session, Product, Sale, SessionStats, StockItem, StockSummary, StockCarryover } from '../types';
 import PageTransition from '../components/PageTransition';
 import HomeButton from '../components/HomeButton';
+import StallComparison from '../components/StallComparison';
+import PendingAllocator from '../components/PendingAllocator';
 
 export default function SessionView() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const { refreshSessions } = useSessions();
+  const { sessions, refreshSessions } = useSessions();
 
   const [session, setSession] = useState<Session | null>(null);
   const [products, setProducts] = useState<Product[]>([]);
   const [sales, setSales] = useState<Sale[]>([]);
-  const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
-  const [quantity, setQuantity] = useState(1);
-  const [price, setPrice] = useState('');
-  const [paymentMethod, setPaymentMethod] = useState<'cash' | 'card'>('cash');
   const [loading, setLoading] = useState(true);
-  const [recording, setRecording] = useState(false);
+  // Cart for multi-item checkout: keyed by product_id.
+  const [cart, setCart] = useState<Record<string, { quantity: number; price: number }>>({});
+  const [showCheckout, setShowCheckout] = useState(false);
+  const [cartPayment, setCartPayment] = useState<'cash' | 'card'>('cash');
+  const [checkoutRecording, setCheckoutRecording] = useState(false);
   const [editingSale, setEditingSale] = useState<string | null>(null);
   const [editQty, setEditQty] = useState(1);
   const [editPrice, setEditPrice] = useState('');
+  const [editPayment, setEditPayment] = useState<'cash' | 'card'>('cash');
+  const [editProductId, setEditProductId] = useState<string>('');
+  // Timestamp value in `datetime-local` format (YYYY-MM-DDTHH:mm), expressed
+  // in the user's local timezone so the input renders correctly.
+  const [editTimestamp, setEditTimestamp] = useState<string>('');
   const [showEditSession, setShowEditSession] = useState(false);
   const [editSessionForm, setEditSessionForm] = useState({ name: '', location: '', notes: '' });
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -44,6 +51,10 @@ export default function SessionView() {
   const [showFinalCount, setShowFinalCount] = useState(false);
   const [finalCountForm, setFinalCountForm] = useState<Record<string, number>>({});
   const [savingFinalCount, setSavingFinalCount] = useState(false);
+
+  // Search state
+  const [productSearch, setProductSearch] = useState('');
+  const [stockSearch, setStockSearch] = useState('');
 
   const fetchData = useCallback(async () => {
     if (!id) return;
@@ -84,24 +95,131 @@ export default function SessionView() {
 
   const hasStock = stockItems.length > 0;
 
-  const selectProduct = (product: Product) => {
-    setSelectedProduct(product);
-    setPrice(product.default_price.toString());
-    setQuantity(1);
+  const cartTotals = useMemo(() => {
+    let units = 0;
+    let value = 0;
+    for (const item of Object.values(cart)) {
+      units += item.quantity;
+      value += item.quantity * item.price;
+    }
+    return { units, value, lineCount: Object.keys(cart).length };
+  }, [cart]);
+
+  // Group sales by transaction_id while preserving the newest-first order of
+  // the sales log. Each block is either a standalone sale or a group of sales
+  // recorded together at checkout.
+  type SalesBlock =
+    | { kind: 'single'; sale: Sale }
+    | { kind: 'group'; txId: string; items: Sale[] };
+  const salesBlocks = useMemo<SalesBlock[]>(() => {
+    const blocks: SalesBlock[] = [];
+    const seen = new Set<string>();
+    for (const s of sales) {
+      if (s.transaction_id) {
+        if (seen.has(s.transaction_id)) continue;
+        seen.add(s.transaction_id);
+        const items = sales.filter(x => x.transaction_id === s.transaction_id);
+        // A "group" of one is just a single sale visually.
+        if (items.length > 1) {
+          blocks.push({ kind: 'group', txId: s.transaction_id, items });
+          continue;
+        }
+      }
+      blocks.push({ kind: 'single', sale: s });
+    }
+    return blocks;
+  }, [sales]);
+
+  // Cart helpers — adding more than remaining stock is blocked.
+  const addToCart = (p: Product) => {
+    const stock = stockMap[p.id];
+    const inCart = cart[p.id]?.quantity ?? 0;
+    if (stock && inCart >= stock.remaining) return;
+    setCart(prev => {
+      const existing = prev[p.id];
+      if (existing) {
+        return { ...prev, [p.id]: { ...existing, quantity: existing.quantity + 1 } };
+      }
+      return {
+        ...prev,
+        [p.id]: { quantity: 1, price: parseFloat(String(p.default_price)) },
+      };
+    });
   };
 
-  const recordSale = async () => {
-    if (!selectedProduct || recording || !id) return;
-    setRecording(true);
+  const decrementCart = (productId: string) => {
+    setCart(prev => {
+      const existing = prev[productId];
+      if (!existing) return prev;
+      if (existing.quantity <= 1) {
+        const next = { ...prev };
+        delete next[productId];
+        return next;
+      }
+      return { ...prev, [productId]: { ...existing, quantity: existing.quantity - 1 } };
+    });
+  };
+
+  const setCartItemQuantity = (productId: string, qty: number) => {
+    setCart(prev => {
+      if (qty <= 0) {
+        const next = { ...prev };
+        delete next[productId];
+        return next;
+      }
+      const existing = prev[productId];
+      if (!existing) return prev;
+      return { ...prev, [productId]: { ...existing, quantity: qty } };
+    });
+  };
+
+  const setCartItemPrice = (productId: string, price: number) => {
+    setCart(prev => {
+      const existing = prev[productId];
+      if (!existing) return prev;
+      return { ...prev, [productId]: { ...existing, price } };
+    });
+  };
+
+  const removeCartItem = (productId: string) => {
+    setCart(prev => {
+      const next = { ...prev };
+      delete next[productId];
+      return next;
+    });
+  };
+
+  const clearCart = () => setCart({});
+
+  const checkout = async () => {
+    if (!id || checkoutRecording) return;
+    const entries = Object.entries(cart);
+    if (entries.length === 0) return;
+    setCheckoutRecording(true);
     try {
-      const sale = await apiPost<Sale>('/sales', {
-        session_id: id,
-        product_id: selectedProduct.id,
-        quantity,
-        price_charged: parseFloat(price),
-        payment_method: paymentMethod,
-      });
-      setSales(prev => [sale, ...prev]);
+      const created: Sale[] = [];
+      // Single shared transaction id stamps every line in this checkout so
+      // they render as a group in the sales log.
+      const transactionId =
+        entries.length > 1 && typeof crypto !== 'undefined' && 'randomUUID' in crypto
+          ? crypto.randomUUID()
+          : null;
+      for (const [productId, item] of entries) {
+        const sale = await apiPost<Sale>('/sales', {
+          session_id: id,
+          product_id: productId,
+          quantity: item.quantity,
+          price_charged: item.price,
+          payment_method: cartPayment,
+          transaction_id: transactionId,
+        });
+        created.push(sale);
+      }
+      // Newest sale appears first in the log
+      setSales(prev => [...created.reverse(), ...prev]);
+
+      const totalUnits = entries.reduce((s, [, i]) => s + i.quantity, 0);
+      const totalRevenue = entries.reduce((s, [, i]) => s + i.quantity * i.price, 0);
       setSession(prev => {
         if (!prev) return prev;
         const stats = prev.stats || { total_revenue: 0, total_units: 0, total_sales: 0, best_seller: null };
@@ -109,29 +227,32 @@ export default function SessionView() {
           ...prev,
           stats: {
             ...stats,
-            total_revenue: stats.total_revenue + quantity * parseFloat(price),
-            total_units: stats.total_units + quantity,
-            total_sales: stats.total_sales + 1,
+            total_revenue: stats.total_revenue + totalRevenue,
+            total_units: stats.total_units + totalUnits,
+            total_sales: stats.total_sales + entries.length,
           },
         };
       });
-      // Update stock sold count locally
-      if (stockMap[selectedProduct.id]) {
-        setStockItems(prev => prev.map(si =>
-          si.product_id === selectedProduct.id
-            ? { ...si, total_sold: parseInt(String(si.total_sold)) + quantity }
-            : si
-        ));
-      }
-      setSelectedProduct(null);
-      setQuantity(1);
-      setPrice('');
-      setPaymentMethod('cash');
+      // Update local stock counts
+      setStockItems(prevStock =>
+        prevStock.map(si => {
+          const cartItem = cart[si.product_id];
+          if (!cartItem) return si;
+          return {
+            ...si,
+            total_sold: parseInt(String(si.total_sold)) + cartItem.quantity,
+          };
+        })
+      );
+
+      setCart({});
+      setShowCheckout(false);
+      setCartPayment('cash');
       refreshSessions();
     } catch {
-      console.error('Failed to record sale');
+      console.error('Failed to checkout cart');
     } finally {
-      setRecording(false);
+      setCheckoutRecording(false);
     }
   };
 
@@ -169,17 +290,34 @@ export default function SessionView() {
     }
   };
 
+  // Format a UTC date into a local `datetime-local`-compatible value.
+  const toLocalInput = (iso: string): string => {
+    const d = new Date(iso);
+    const pad = (n: number) => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  };
+
   const startEditSale = (sale: Sale) => {
     setEditingSale(sale.id);
     setEditQty(sale.quantity);
     setEditPrice(parseFloat(String(sale.price_charged)).toString());
+    setEditPayment(sale.payment_method === 'card' ? 'card' : 'cash');
+    setEditProductId(sale.product_id);
+    setEditTimestamp(toLocalInput(sale.timestamp));
   };
 
   const saveEditSale = async (sale: Sale) => {
     try {
+      // Convert datetime-local back to a full ISO string (browser parses it
+      // as the user's local time, which we then push as UTC).
+      const isoTimestamp = editTimestamp ? new Date(editTimestamp).toISOString() : undefined;
+      const productChanged = editProductId && editProductId !== sale.product_id;
       const updated = await apiPatch<Sale>(`/sales/${sale.id}`, {
         quantity: editQty,
         price_charged: parseFloat(editPrice),
+        payment_method: editPayment,
+        ...(productChanged ? { product_id: editProductId } : {}),
+        ...(isoTimestamp ? { timestamp: isoTimestamp } : {}),
       });
       const oldTotal = sale.quantity * parseFloat(String(sale.price_charged));
       const newTotal = editQty * parseFloat(editPrice);
@@ -198,14 +336,22 @@ export default function SessionView() {
           },
         };
       });
-      // Update stock sold count locally
-      if (stockMap[sale.product_id]) {
-        setStockItems(prev => prev.map(si =>
-          si.product_id === sale.product_id
-            ? { ...si, total_sold: parseInt(String(si.total_sold)) - oldUnits + newUnits }
-            : si
-        ));
-      }
+      // Update stock sold count locally — split the unit adjustment between
+      // the old product (decrement) and new product (increment) if changed.
+      const oldProductId = sale.product_id;
+      const newProductId = productChanged ? editProductId : sale.product_id;
+      setStockItems(prev => prev.map(si => {
+        if (si.product_id === oldProductId && !productChanged) {
+          return { ...si, total_sold: parseInt(String(si.total_sold)) - oldUnits + newUnits };
+        }
+        if (si.product_id === oldProductId && productChanged) {
+          return { ...si, total_sold: Math.max(0, parseInt(String(si.total_sold)) - oldUnits) };
+        }
+        if (si.product_id === newProductId && productChanged) {
+          return { ...si, total_sold: parseInt(String(si.total_sold)) + newUnits };
+        }
+        return si;
+      }));
       setEditingSale(null);
       refreshSessions();
     } catch {
@@ -282,6 +428,7 @@ export default function SessionView() {
       form[p.id] = existing ? parseInt(String(existing.initial_quantity)) : 0;
     }
     setStockForm(form);
+    setStockSearch('');
     setShowStockSetup(true);
 
     // Fetch carryover info in the background so the button can be enabled
@@ -407,24 +554,39 @@ export default function SessionView() {
   const cardRevenue = sales
     .filter(s => s.payment_method === 'card')
     .reduce((sum, s) => sum + s.quantity * parseFloat(String(s.price_charged)), 0);
+  const cashRevenue = sales
+    .filter(s => s.payment_method === 'cash')
+    .reduce((sum, s) => sum + s.quantity * parseFloat(String(s.price_charged)), 0);
   const totalCardFees = session.card_fee_applied ? cardRevenue * (feeRate / 100) : 0;
   const netRevenue = stats.total_revenue - totalCardFees;
 
-  // Group products by category
+  const matchesQuery = (p: Product, q: string): boolean => {
+    if (!q) return true;
+    const needle = q.trim().toLowerCase();
+    if (!needle) return true;
+    return (
+      p.name.toLowerCase().includes(needle) ||
+      (p.category || '').toLowerCase().includes(needle)
+    );
+  };
+
+  // Group products by category (filtered by the in-grid search)
   const categories: Record<string, Product[]> = {};
-  products.forEach(p => {
+  products.filter(p => matchesQuery(p, productSearch)).forEach(p => {
     const cat = p.category || 'Other';
     if (!categories[cat]) categories[cat] = [];
     categories[cat].push(p);
   });
+  const productMatchCount = Object.values(categories).reduce((n, arr) => n + arr.length, 0);
 
-  // Group stock form products by category for the setup modal
+  // Group stock form products by category for the setup modal (filtered)
   const stockCategories: Record<string, Product[]> = {};
-  products.forEach(p => {
+  products.filter(p => matchesQuery(p, stockSearch)).forEach(p => {
     const cat = p.category || 'Other';
     if (!stockCategories[cat]) stockCategories[cat] = [];
     stockCategories[cat].push(p);
   });
+  const stockMatchCount = Object.values(stockCategories).reduce((n, arr) => n + arr.length, 0);
 
   return (
     <PageTransition>
@@ -465,6 +627,18 @@ export default function SessionView() {
             </p>
           </div>
         </motion.div>
+
+        {/* Stall Comparison */}
+        {id && <StallComparison sessions={sessions} currentSessionId={id} />}
+
+        {/* Pending SumUp card transactions */}
+        {id && isActive && (
+          <PendingAllocator
+            sessionId={id}
+            products={products}
+            onAllocated={fetchData}
+          />
+        )}
 
         {/* Edit Session Modal */}
         <AnimatePresence>
@@ -577,7 +751,41 @@ export default function SessionView() {
                   </div>
                 )}
 
-                <div className="overflow-y-auto flex-1 -mx-1 px-1 space-y-4">
+                <div className="overflow-y-auto flex-1 -mx-1 px-1">
+                  {/* Search pinned to the top of the scroll area */}
+                  <div className="sticky top-0 z-10 bg-navy-light/95 backdrop-blur-md pb-3 -mx-1 px-1">
+                    <div className="relative">
+                      <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500 pointer-events-none" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-4.35-4.35M11 19a8 8 0 100-16 8 8 0 000 16z" />
+                      </svg>
+                      <input
+                        type="text"
+                        value={stockSearch}
+                        onChange={e => setStockSearch(e.target.value)}
+                        placeholder="Search stock..."
+                        className="w-full !pl-9 !pr-9 text-sm"
+                      />
+                      {stockSearch && (
+                        <button
+                          type="button"
+                          onClick={() => setStockSearch('')}
+                          className="absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-500 hover:text-white transition-colors p-1"
+                          aria-label="Clear search"
+                        >
+                          <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                          </svg>
+                        </button>
+                      )}
+                    </div>
+                  </div>
+
+                  {stockSearch && stockMatchCount === 0 && (
+                    <p className="text-gray-600 text-sm text-center py-6">
+                      No products match "{stockSearch}"
+                    </p>
+                  )}
+                  <div className="space-y-4">
                   {Object.entries(stockCategories).map(([cat, prods]) => (
                     <div key={cat}>
                       <p className="section-title text-gray-600 mb-2">{cat}</p>
@@ -611,6 +819,7 @@ export default function SessionView() {
                       </div>
                     </div>
                   ))}
+                  </div>
                 </div>
 
                 <div className="flex gap-2 mt-4 pt-3 border-t border-white/[0.06]">
@@ -877,7 +1086,7 @@ export default function SessionView() {
         </AnimatePresence>
 
         {/* Stats Bar */}
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3 mb-4">
           {[
             {
               label: session.card_fee_applied ? 'Net Revenue' : 'Revenue',
@@ -885,6 +1094,8 @@ export default function SessionView() {
               color: 'text-gold',
               glow: { boxShadow: '0 0 10px rgba(212, 168, 67, 0.1)' },
             },
+            { label: 'Cash Sales', value: formatCurrency(cashRevenue), color: 'text-green-400', glow: {} },
+            { label: 'Card Sales', value: formatCurrency(cardRevenue), color: 'text-blue-400', glow: {} },
             { label: 'Units Sold', value: String(stats.total_units), color: 'text-white', glow: {} },
             { label: 'Sales', value: String(stats.total_sales), color: 'text-white', glow: {} },
             { label: 'Best Seller', value: stats.best_seller || '-', color: 'text-white', glow: {}, truncate: true },
@@ -938,33 +1149,165 @@ export default function SessionView() {
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
           {/* Left Column: Product Grid + Sale Form */}
           <div>
+            {/* Inventory — grouped and prominent so it's the first thing seen */}
+            <motion.div
+              className="card mb-6"
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.3, delay: 0.1 }}
+            >
+              <div className="flex items-center justify-between mb-3">
+                <div className="flex items-center gap-2">
+                  <svg className="w-4 h-4 text-gold" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4" />
+                  </svg>
+                  <h2 className="text-white font-semibold text-sm">Inventory</h2>
+                </div>
+                {hasStock && (
+                  <button
+                    onClick={openStockSummary}
+                    className="text-[11px] text-orange-400 hover:text-orange-300 font-medium transition-colors flex items-center gap-1"
+                  >
+                    View summary
+                    <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                    </svg>
+                  </button>
+                )}
+              </div>
+
+              <p className="text-[11px] text-gray-500 mb-3">
+                {!hasStock && 'Set starting stock so the app can show what’s left as you sell.'}
+                {hasStock && !hasFinalCounts && (
+                  <>
+                    <span className="text-gray-300 font-medium">{stockItems.reduce((sum, si) => sum + parseInt(String(si.initial_quantity)), 0)}</span> items tracked
+                    {' · final count pending'}
+                  </>
+                )}
+                {hasStock && hasFinalCounts && (
+                  <>
+                    <span className="text-gray-300 font-medium">{stockItems.reduce((sum, si) => sum + parseInt(String(si.initial_quantity)), 0)}</span> items tracked
+                    {' · '}
+                    <span className="text-emerald-400 font-medium">final count saved</span>
+                  </>
+                )}
+              </p>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                <button
+                  onClick={openStockSetup}
+                  className={`py-3 px-4 rounded-xl text-sm font-semibold transition-all duration-200 flex items-center gap-2 justify-center ${
+                    hasStock
+                      ? 'bg-purple-500/15 text-purple-300 border border-purple-500/30 hover:bg-purple-500/25'
+                      : 'bg-gradient-to-r from-purple-500/20 to-purple-600/20 text-purple-200 border border-purple-500/40 hover:from-purple-500/30 hover:to-purple-600/30'
+                  }`}
+                >
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4" />
+                  </svg>
+                  {hasStock ? 'Edit Starting Stock' : 'Set Starting Stock'}
+                </button>
+
+                <button
+                  onClick={hasStock ? openFinalCount : openStockSetup}
+                  disabled={!hasStock}
+                  className={`py-3 px-4 rounded-xl text-sm font-semibold transition-all duration-200 flex items-center gap-2 justify-center ${
+                    !hasStock
+                      ? 'bg-white/[0.02] text-gray-600 border border-white/[0.04] cursor-not-allowed'
+                      : hasFinalCounts
+                      ? 'bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 hover:bg-emerald-500/25'
+                      : 'bg-gradient-to-r from-emerald-500/20 to-emerald-600/20 text-emerald-200 border border-emerald-500/40 hover:from-emerald-500/30 hover:to-emerald-600/30'
+                  }`}
+                  title={!hasStock ? 'Set starting stock first' : ''}
+                >
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" />
+                  </svg>
+                  {hasFinalCounts ? 'Edit Final Count' : 'Count Remaining Stock'}
+                </button>
+              </div>
+            </motion.div>
+
+            {/* Sticky title + search bar — sits at the left-column level so
+                it has the full column height to pin within. Pinned via inline
+                style as a belt-and-braces against any class-purge oddities. */}
+            {isActive && (
+              <div
+                data-sticky="tap-to-sell"
+                className="sticky top-14 md:top-0 z-20 -mx-1 px-1 pt-2 pb-3 mb-3 bg-navy/95 backdrop-blur-md border-b border-white/[0.04]"
+                style={{ position: 'sticky', zIndex: 20 }}
+              >
+                <div className="flex items-center justify-between mb-2 gap-3">
+                  <h2 className="section-title text-gold">Tap to Sell</h2>
+                  <span className="text-[10px] text-gray-600">
+                    {productSearch ? `${productMatchCount} match${productMatchCount === 1 ? '' : 'es'}` : `${products.length} products`}
+                  </span>
+                </div>
+                <div className="relative">
+                  <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500 pointer-events-none" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-4.35-4.35M11 19a8 8 0 100-16 8 8 0 000 16z" />
+                  </svg>
+                  <input
+                    type="text"
+                    value={productSearch}
+                    onChange={e => setProductSearch(e.target.value)}
+                    placeholder="Search products..."
+                    className="w-full !pl-9 !pr-9 text-sm"
+                  />
+                  {productSearch && (
+                    <button
+                      type="button"
+                      onClick={() => setProductSearch('')}
+                      className="absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-500 hover:text-white transition-colors p-1"
+                      aria-label="Clear search"
+                    >
+                      <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                      </svg>
+                    </button>
+                  )}
+                </div>
+              </div>
+            )}
+
             {/* Product Selection (only when active) */}
-            {isActive && !selectedProduct && (
+            {isActive && (
               <motion.div
                 className="mb-6"
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
                 transition={{ duration: 0.3 }}
               >
-                <h2 className="section-title text-gold mb-3">Tap to Sell</h2>
                 {Object.entries(categories).map(([cat, prods]) => (
                   <div key={cat} className="mb-4">
                     <p className="section-title text-gray-600 mb-2">{cat}</p>
                     <div className="grid grid-cols-2 gap-2">
                       {prods.map((p, i) => {
                         const stock = stockMap[p.id];
+                        const inCartQty = cart[p.id]?.quantity ?? 0;
+                        const remainingAfterCart = stock ? stock.remaining - inCartQty : Infinity;
                         const outOfStock = stock && stock.remaining <= 0;
+                        const cantAddMore = remainingAfterCart <= 0;
                         return (
                           <motion.button
                             key={p.id}
-                            onClick={() => !outOfStock && selectProduct(p)}
-                            className={`card-hover text-left relative ${outOfStock ? 'opacity-40 cursor-not-allowed' : ''}`}
+                            onClick={() => !cantAddMore && addToCart(p)}
+                            className={`card-hover text-left relative ${
+                              outOfStock ? 'opacity-40 cursor-not-allowed' : ''
+                            } ${
+                              inCartQty > 0 ? 'ring-2 ring-gold/40' : ''
+                            }`}
                             initial={{ opacity: 0, scale: 0.95 }}
                             animate={{ opacity: outOfStock ? 0.4 : 1, scale: 1 }}
                             transition={{ delay: i * 0.04, duration: 0.3 }}
-                            whileHover={outOfStock ? {} : { scale: 1.02 }}
-                            whileTap={outOfStock ? {} : { scale: 0.97 }}
+                            whileHover={cantAddMore ? {} : { scale: 1.02 }}
+                            whileTap={cantAddMore ? {} : { scale: 0.97 }}
                           >
+                            {inCartQty > 0 && (
+                              <span className="absolute -top-1.5 -right-1.5 z-10 min-w-[20px] h-5 px-1.5 rounded-full bg-gold text-navy text-[11px] font-bold flex items-center justify-center shadow-glow-gold-sm">
+                                {inCartQty}
+                              </span>
+                            )}
                             <p className="font-medium text-white text-sm">{p.name}</p>
                             <div className="flex items-center justify-between">
                               <p className="text-gold text-sm">{formatCurrency(parseFloat(String(p.default_price)))}</p>
@@ -989,202 +1332,12 @@ export default function SessionView() {
                 {products.length === 0 && (
                   <p className="text-gray-600 text-sm">No products yet. Add some from the Products page.</p>
                 )}
-              </motion.div>
-            )}
-
-            {/* Sale Form */}
-            <AnimatePresence>
-              {isActive && selectedProduct && (
-                <motion.div
-                  className="card mb-6 space-y-4"
-                  initial={{ opacity: 0, y: 10 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, y: -10 }}
-                  transition={{ duration: 0.25 }}
-                >
-                  <div className="flex items-center justify-between">
-                    <h3 className="font-semibold text-white">{selectedProduct.name}</h3>
-                    <button onClick={() => setSelectedProduct(null)} className="text-gray-500 hover:text-white text-sm transition-colors">
-                      Cancel
-                    </button>
-                  </div>
-
-                  {/* Stock warning */}
-                  {stockMap[selectedProduct.id] && (
-                    <div className={`text-xs px-2 py-1 rounded-lg ${
-                      stockMap[selectedProduct.id].remaining <= 0
-                        ? 'bg-red-500/10 text-red-400 border border-red-500/20'
-                        : stockMap[selectedProduct.id].remaining <= 2
-                        ? 'bg-orange-500/10 text-orange-400 border border-orange-500/20'
-                        : 'bg-white/[0.03] text-gray-400 border border-white/[0.06]'
-                    }`}>
-                      Stock: {stockMap[selectedProduct.id].remaining} remaining of {stockMap[selectedProduct.id].initial}
-                    </div>
-                  )}
-
-                  <div className="flex gap-3">
-                    <div className="flex-1">
-                      <label className="text-xs text-gray-500 block mb-1">Quantity</label>
-                      <div className="flex items-center gap-2">
-                        <motion.button
-                          onClick={() => setQuantity(Math.max(1, quantity - 1))}
-                          className="btn-outline px-3 py-2 text-lg"
-                          whileTap={{ scale: 0.9 }}
-                        >-</motion.button>
-                        <input
-                          type="number"
-                          value={quantity}
-                          onChange={e => setQuantity(Math.max(1, parseInt(e.target.value) || 1))}
-                          className="w-16 text-center text-lg"
-                          min="1"
-                        />
-                        <motion.button
-                          onClick={() => setQuantity(quantity + 1)}
-                          className="btn-outline px-3 py-2 text-lg"
-                          whileTap={{ scale: 0.9 }}
-                        >+</motion.button>
-                      </div>
-                    </div>
-                    <div className="flex-1">
-                      <label className="text-xs text-gray-500 block mb-1">Price Each</label>
-                      <input
-                        type="number"
-                        value={price}
-                        onChange={e => setPrice(e.target.value)}
-                        className="w-full text-lg"
-                        step="0.01"
-                        min="0"
-                      />
-                      <p className="text-xs text-gray-600 mt-0.5">
-                        Default: {formatCurrency(parseFloat(String(selectedProduct.default_price)))}
-                      </p>
-                    </div>
-                  </div>
-
-                  <div className="flex items-center justify-between pt-3 border-t border-white/[0.06]">
-                    <span className="text-gray-400">Total</span>
-                    <span className="text-xl font-bold text-gold">
-                      {formatCurrency(quantity * (parseFloat(price) || 0))}
-                    </span>
-                  </div>
-
-                  {/* Payment Method Toggle */}
-                  <div>
-                    <label className="text-xs text-gray-500 block mb-1.5">Payment Method</label>
-                    <div className="flex gap-2">
-                      <button
-                        type="button"
-                        onClick={() => setPaymentMethod('cash')}
-                        className={`flex-1 py-2 rounded-xl text-sm font-medium transition-all duration-200 ${
-                          paymentMethod === 'cash'
-                            ? 'bg-green-500/15 text-green-400 border border-green-500/30'
-                            : 'text-gray-400 border border-white/[0.06] hover:border-white/10'
-                        }`}
-                      >
-                        Cash
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setPaymentMethod('card')}
-                        className={`flex-1 py-2 rounded-xl text-sm font-medium transition-all duration-200 ${
-                          paymentMethod === 'card'
-                            ? 'bg-blue-500/15 text-blue-400 border border-blue-500/30'
-                            : 'text-gray-400 border border-white/[0.06] hover:border-white/10'
-                        }`}
-                      >
-                        Card
-                      </button>
-                    </div>
-                  </div>
-
-                  <motion.button
-                    onClick={recordSale}
-                    disabled={recording || !price || parseFloat(price) <= 0}
-                    className="btn-gold w-full text-lg disabled:opacity-50 disabled:cursor-not-allowed"
-                    whileHover={{ scale: 1.01 }}
-                    whileTap={{ scale: 0.98 }}
-                  >
-                    {recording ? (
-                      <span className="flex items-center justify-center gap-2">
-                        <motion.span
-                          className="w-2 h-2 rounded-full bg-navy"
-                          animate={{ scale: [1, 1.3, 1] }}
-                          transition={{ duration: 0.6, repeat: Infinity }}
-                        />
-                        Recording...
-                      </span>
-                    ) : 'Record Sale'}
-                  </motion.button>
-                </motion.div>
-              )}
-            </AnimatePresence>
-
-            {/* Stock Setup Button */}
-            <div className="mb-3">
-              <button
-                onClick={openStockSetup}
-                className={`w-full py-2.5 px-4 rounded-xl text-sm font-medium transition-all duration-200 flex items-center justify-between ${
-                  hasStock
-                    ? 'bg-purple-500/10 text-purple-400 border border-purple-500/20'
-                    : 'text-gray-400 border border-white/[0.06] hover:border-purple-500/20 hover:text-purple-400'
-                }`}
-              >
-                <span className="flex items-center gap-2">
-                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4" />
-                  </svg>
-                  {hasStock ? 'Edit Starting Stock' : 'Set Starting Stock'}
-                </span>
-                {hasStock && (
-                  <span className="text-xs text-gray-500">
-                    {stockItems.reduce((sum, si) => sum + parseInt(String(si.initial_quantity)), 0)} items tracked
-                  </span>
+                {products.length > 0 && productMatchCount === 0 && (
+                  <p className="text-gray-600 text-sm text-center py-6">
+                    No products match "{productSearch}"
+                  </p>
                 )}
-              </button>
-            </div>
-
-            {/* Count Remaining Stock Button (only when stock is set) */}
-            {hasStock && (
-              <div className="mb-3">
-                <button
-                  onClick={openFinalCount}
-                  className={`w-full py-2.5 px-4 rounded-xl text-sm font-medium transition-all duration-200 flex items-center justify-between ${
-                    hasFinalCounts
-                      ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
-                      : 'text-gray-400 border border-white/[0.06] hover:border-emerald-500/20 hover:text-emerald-400'
-                  }`}
-                >
-                  <span className="flex items-center gap-2">
-                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" />
-                    </svg>
-                    {hasFinalCounts ? 'Edit Final Stock Count' : 'Count Remaining Stock'}
-                  </span>
-                  {hasFinalCounts && (
-                    <span className="text-xs text-gray-500">Counted</span>
-                  )}
-                </button>
-              </div>
-            )}
-
-            {/* Stock Summary Button (only shown when stock is set) */}
-            {hasStock && (
-              <div className="mb-3">
-                <button
-                  onClick={openStockSummary}
-                  className="w-full py-2.5 px-4 rounded-xl text-sm font-medium transition-all duration-200 flex items-center justify-between bg-orange-500/10 text-orange-400 border border-orange-500/20 hover:bg-orange-500/15"
-                >
-                  <span className="flex items-center gap-2">
-                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
-                    </svg>
-                    Stock vs Sales Summary
-                  </span>
-                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-                  </svg>
-                </button>
-              </div>
+              </motion.div>
             )}
 
             {/* Card Fee Toggle */}
@@ -1271,46 +1424,94 @@ export default function SessionView() {
                   Sales Log ({sales.length})
                 </h2>
                 <div className="space-y-2">
-                  {sales.map((sale, i) => (
-                    <motion.div
-                      key={sale.id}
-                      className="card"
-                      initial={{ opacity: 0, x: 10 }}
-                      animate={{ opacity: 1, x: 0 }}
-                      transition={{ delay: Math.min(i * 0.03, 0.3), duration: 0.3 }}
-                    >
-                      {editingSale === sale.id ? (
-                        <div className="space-y-3">
-                          <p className="font-medium text-white text-sm">{sale.product_name}</p>
-                          <div className="flex gap-3">
-                            <div className="flex-1">
-                              <label className="text-xs text-gray-500 block mb-1">Qty</label>
-                              <input
-                                type="number"
-                                value={editQty}
-                                onChange={e => setEditQty(Math.max(1, parseInt(e.target.value) || 1))}
+                  {(() => {
+                    const renderSaleRow = (sale: Sale, opts?: { compact?: boolean }) => {
+                      const compact = opts?.compact;
+                      if (editingSale === sale.id) {
+                        const productsSorted = [...products].sort((a, b) => a.name.localeCompare(b.name));
+                        return (
+                          <div className="space-y-3">
+                            <div>
+                              <label className="text-xs text-gray-500 block mb-1">Product</label>
+                              <select
+                                value={editProductId}
+                                onChange={e => setEditProductId(e.target.value)}
                                 className="w-full text-sm"
-                                min="1"
+                              >
+                                {productsSorted.map(p => (
+                                  <option key={p.id} value={p.id}>
+                                    {p.name}{p.category ? ` · ${p.category}` : ''}
+                                  </option>
+                                ))}
+                              </select>
+                            </div>
+                            <div className="flex gap-3">
+                              <div className="flex-1">
+                                <label className="text-xs text-gray-500 block mb-1">Qty</label>
+                                <input
+                                  type="number"
+                                  value={editQty}
+                                  onChange={e => setEditQty(Math.max(1, parseInt(e.target.value) || 1))}
+                                  className="w-full text-sm"
+                                  min="1"
+                                />
+                              </div>
+                              <div className="flex-1">
+                                <label className="text-xs text-gray-500 block mb-1">Price</label>
+                                <input
+                                  type="number"
+                                  value={editPrice}
+                                  onChange={e => setEditPrice(e.target.value)}
+                                  className="w-full text-sm"
+                                  step="0.01"
+                                  min="0"
+                                />
+                              </div>
+                            </div>
+                            <div>
+                              <label className="text-xs text-gray-500 block mb-1">When</label>
+                              <input
+                                type="datetime-local"
+                                value={editTimestamp}
+                                onChange={e => setEditTimestamp(e.target.value)}
+                                className="w-full text-sm"
                               />
                             </div>
-                            <div className="flex-1">
-                              <label className="text-xs text-gray-500 block mb-1">Price</label>
-                              <input
-                                type="number"
-                                value={editPrice}
-                                onChange={e => setEditPrice(e.target.value)}
-                                className="w-full text-sm"
-                                step="0.01"
-                                min="0"
-                              />
+                            <div>
+                              <label className="text-xs text-gray-500 block mb-1">Payment</label>
+                              <div className="flex gap-2">
+                                <button
+                                  type="button"
+                                  onClick={() => setEditPayment('cash')}
+                                  className={`flex-1 py-1.5 rounded-lg text-xs font-medium transition-all duration-200 ${
+                                    editPayment === 'cash'
+                                      ? 'bg-green-500/15 text-green-400 border border-green-500/30'
+                                      : 'text-gray-400 border border-white/[0.06] hover:border-white/10'
+                                  }`}
+                                >
+                                  Cash
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setEditPayment('card')}
+                                  className={`flex-1 py-1.5 rounded-lg text-xs font-medium transition-all duration-200 ${
+                                    editPayment === 'card'
+                                      ? 'bg-blue-500/15 text-blue-400 border border-blue-500/30'
+                                      : 'text-gray-400 border border-white/[0.06] hover:border-white/10'
+                                  }`}
+                                >
+                                  Card
+                                </button>
+                              </div>
+                            </div>
+                            <div className="flex gap-2">
+                              <button onClick={() => saveEditSale(sale)} className="btn-gold flex-1 text-xs !py-2">Save</button>
+                              <button onClick={() => setEditingSale(null)} className="btn-outline flex-1 text-xs !py-2">Cancel</button>
                             </div>
                           </div>
-                          <div className="flex gap-2">
-                            <button onClick={() => saveEditSale(sale)} className="btn-gold flex-1 text-xs !py-2">Save</button>
-                            <button onClick={() => setEditingSale(null)} className="btn-outline flex-1 text-xs !py-2">Cancel</button>
-                          </div>
-                        </div>
-                      ) : (
+                        );
+                      }
+                      return (
                         <div className="flex items-center justify-between group">
                           <div>
                             <div className="flex items-center gap-2">
@@ -1325,8 +1526,12 @@ export default function SessionView() {
                             </div>
                             <p className="text-gray-500 text-xs">
                               {sale.quantity}x @ {formatCurrency(parseFloat(String(sale.price_charged)))}
-                              {' \u00b7 '}
-                              {new Date(sale.timestamp).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}
+                              {!compact && (
+                                <>
+                                  {' \u00b7 '}
+                                  {new Date(sale.timestamp).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}
+                                </>
+                              )}
                             </p>
                           </div>
                           <div className="flex items-center gap-3">
@@ -1352,9 +1557,85 @@ export default function SessionView() {
                             )}
                           </div>
                         </div>
-                      )}
-                    </motion.div>
-                  ))}
+                      );
+                    };
+
+                    return salesBlocks.map((block, i) => {
+                      const delay = Math.min(i * 0.03, 0.3);
+
+                      if (block.kind === 'single') {
+                        return (
+                          <motion.div
+                            key={block.sale.id}
+                            className="card"
+                            initial={{ opacity: 0, x: 10 }}
+                            animate={{ opacity: 1, x: 0 }}
+                            transition={{ delay, duration: 0.3 }}
+                          >
+                            {renderSaleRow(block.sale)}
+                          </motion.div>
+                        );
+                      }
+
+                      // Group block \u2014 wrap all items in one receipt-style card
+                      // with a header showing the totals + a connecting gold
+                      // ribbon down the left edge.
+                      const groupTotal = block.items.reduce(
+                        (s, it) => s + it.quantity * parseFloat(String(it.price_charged)),
+                        0
+                      );
+                      const firstTime = block.items[0]?.timestamp;
+                      const allCash = block.items.every(it => it.payment_method === 'cash');
+                      const allCard = block.items.every(it => it.payment_method === 'card');
+                      const paymentLabel = allCash ? 'CASH' : allCard ? 'CARD' : 'MIXED';
+                      const paymentClass = allCash
+                        ? 'bg-green-500/15 text-green-400 border-green-500/20'
+                        : allCard
+                          ? 'bg-blue-500/15 text-blue-400 border-blue-500/20'
+                          : 'bg-gray-500/15 text-gray-300 border-gray-500/20';
+                      return (
+                        <motion.div
+                          key={block.txId}
+                          className="relative card !p-0 overflow-hidden border-gold/20"
+                          initial={{ opacity: 0, x: 10 }}
+                          animate={{ opacity: 1, x: 0 }}
+                          transition={{ delay, duration: 0.3 }}
+                        >
+                          {/* Gold ribbon down the left edge so the group reads
+                              as a single transaction at a glance. */}
+                          <span
+                            aria-hidden
+                            className="absolute left-0 top-0 bottom-0 w-1 bg-gradient-to-b from-gold to-gold-dark"
+                          />
+
+                          <div className="pl-4 pr-4 py-2.5 flex items-center gap-2 border-b border-white/[0.05]">
+                            <span className="text-[10px] font-semibold uppercase tracking-wider text-gold/90 whitespace-nowrap">
+                              Group \u00b7 {block.items.length} lines
+                            </span>
+                            <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded-md border ${paymentClass}`}>
+                              {paymentLabel}
+                            </span>
+                            <span className="text-[10px] text-gray-500 truncate">
+                              {firstTime &&
+                                new Date(firstTime).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}
+                            </span>
+                            <span className="flex-1" />
+                            <span className="text-base font-bold text-gold tabular-nums whitespace-nowrap">
+                              {formatCurrency(groupTotal)}
+                            </span>
+                          </div>
+
+                          <div className="divide-y divide-white/[0.05] pl-4">
+                            {block.items.map(sale => (
+                              <div key={sale.id} className="px-3 py-2.5 pr-4">
+                                {renderSaleRow(sale, { compact: true })}
+                              </div>
+                            ))}
+                          </div>
+                        </motion.div>
+                      );
+                    });
+                  })()}
                 </div>
               </div>
             )}
@@ -1367,12 +1648,228 @@ export default function SessionView() {
                   </svg>
                 </div>
                 <p className="text-sm">No sales recorded yet</p>
-                {isActive && <p className="text-xs mt-1 text-gray-600">Select a product to record your first sale</p>}
+                {isActive && <p className="text-xs mt-1 text-gray-600">Tap products to build a sale, then checkout</p>}
               </div>
             )}
           </div>
         </div>
+
+        {/* Spacer so the floating cart bar doesn't sit on top of the last
+            content row when the cart has items. */}
+        {isActive && cartTotals.lineCount > 0 && <div className="h-20" />}
       </div>
+
+      {/* Floating cart bar — appears whenever the cart has items. */}
+      <AnimatePresence>
+        {isActive && cartTotals.lineCount > 0 && (
+          <motion.div
+            initial={{ y: 80, opacity: 0 }}
+            animate={{ y: 0, opacity: 1 }}
+            exit={{ y: 80, opacity: 0 }}
+            transition={{ type: 'spring', stiffness: 380, damping: 32 }}
+            className="fixed bottom-0 left-0 right-0 md:left-72 z-30 px-3 pb-3 pointer-events-none"
+          >
+            <button
+              type="button"
+              onClick={() => {
+                setCartPayment('cash');
+                setShowCheckout(true);
+              }}
+              className="pointer-events-auto w-full max-w-3xl mx-auto flex items-center justify-between gap-3 rounded-2xl px-4 py-3 text-navy font-semibold shadow-glow-gold backdrop-blur-md bg-gradient-gold transition-all duration-200 active:scale-[0.99] hover:brightness-105"
+            >
+              <span className="flex items-center gap-2 min-w-0">
+                <span className="bg-navy/20 rounded-lg w-8 h-8 flex items-center justify-center text-sm font-bold flex-shrink-0">
+                  {cartTotals.units}
+                </span>
+                <span className="text-left min-w-0">
+                  <span className="block text-xs opacity-70 -mb-0.5">
+                    {cartTotals.lineCount} line{cartTotals.lineCount === 1 ? '' : 's'} · {cartTotals.units} item{cartTotals.units === 1 ? '' : 's'}
+                  </span>
+                  <span className="block text-base font-bold">
+                    {formatCurrency(cartTotals.value)}
+                  </span>
+                </span>
+              </span>
+              <span className="flex items-center gap-1 text-sm">
+                Checkout
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M9 5l7 7-7 7" />
+                </svg>
+              </span>
+            </button>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Checkout Modal */}
+      <AnimatePresence>
+        {showCheckout && (
+          <motion.div
+            className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-end md:items-center justify-center p-0 md:p-4"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            onClick={() => !checkoutRecording && setShowCheckout(false)}
+          >
+            <motion.div
+              initial={{ opacity: 0, y: 40 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: 40 }}
+              transition={{ duration: 0.25 }}
+              onClick={e => e.stopPropagation()}
+              className="card w-full max-w-lg max-h-[90vh] flex flex-col rounded-b-none md:rounded-2xl"
+            >
+              <div className="flex items-center justify-between mb-4">
+                <div>
+                  <h3 className="font-semibold text-gold text-sm">Checkout</h3>
+                  <p className="text-xs text-gray-500 mt-0.5">
+                    {cartTotals.lineCount} line{cartTotals.lineCount === 1 ? '' : 's'} · {cartTotals.units} item{cartTotals.units === 1 ? '' : 's'}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={clearCart}
+                  className="text-xs text-gray-500 hover:text-red-400 transition-colors"
+                >
+                  Clear all
+                </button>
+              </div>
+
+              <div className="overflow-y-auto flex-1 -mx-1 px-1 space-y-2">
+                {Object.entries(cart).map(([pid, item]) => {
+                  const product = products.find(p => p.id === pid);
+                  if (!product) return null;
+                  const lineTotal = item.quantity * item.price;
+                  return (
+                    <div key={pid} className="card !p-3">
+                      <div className="flex items-start justify-between mb-2 gap-2">
+                        <p className="font-medium text-white text-sm flex-1 min-w-0 truncate">{product.name}</p>
+                        <button
+                          type="button"
+                          onClick={() => removeCartItem(pid)}
+                          className="text-gray-500 hover:text-red-400 transition-colors p-0.5 flex-shrink-0"
+                          aria-label="Remove from cart"
+                        >
+                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                          </svg>
+                        </button>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <div className="flex items-center gap-1.5">
+                          <motion.button
+                            type="button"
+                            onClick={() => decrementCart(pid)}
+                            className="btn-outline !px-2 !py-1 text-sm"
+                            whileTap={{ scale: 0.9 }}
+                          >-</motion.button>
+                          <input
+                            type="number"
+                            value={item.quantity}
+                            onChange={e => setCartItemQuantity(pid, Math.max(0, parseInt(e.target.value) || 0))}
+                            className="w-12 text-center text-sm"
+                            min="0"
+                          />
+                          <motion.button
+                            type="button"
+                            onClick={() => addToCart(product)}
+                            className="btn-outline !px-2 !py-1 text-sm"
+                            whileTap={{ scale: 0.9 }}
+                          >+</motion.button>
+                        </div>
+                        <span className="text-gray-600 text-xs">×</span>
+                        <div className="relative flex-1">
+                          <span className="absolute left-2 top-1/2 -translate-y-1/2 text-xs text-gray-500 pointer-events-none">£</span>
+                          <input
+                            type="number"
+                            value={item.price}
+                            onChange={e => setCartItemPrice(pid, parseFloat(e.target.value) || 0)}
+                            className="w-full !pl-5 text-sm"
+                            step="0.01"
+                            min="0"
+                          />
+                        </div>
+                        <span className="text-gold font-semibold text-sm w-16 text-right">
+                          {formatCurrency(lineTotal)}
+                        </span>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+
+              {/* Total */}
+              <div className="mt-3 pt-3 border-t border-white/[0.06] flex items-center justify-between">
+                <span className="text-gray-400 text-sm">Total</span>
+                <span className="text-2xl font-bold text-gold">
+                  {formatCurrency(cartTotals.value)}
+                </span>
+              </div>
+
+              {/* Payment toggle */}
+              <div className="mt-3">
+                <label className="text-xs text-gray-500 block mb-1.5">Payment Method</label>
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setCartPayment('cash')}
+                    className={`flex-1 py-2.5 rounded-xl text-sm font-semibold transition-all duration-200 ${
+                      cartPayment === 'cash'
+                        ? 'bg-green-500/15 text-green-400 border border-green-500/40'
+                        : 'text-gray-400 border border-white/[0.06] hover:border-white/10'
+                    }`}
+                  >
+                    Cash
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setCartPayment('card')}
+                    className={`flex-1 py-2.5 rounded-xl text-sm font-semibold transition-all duration-200 ${
+                      cartPayment === 'card'
+                        ? 'bg-blue-500/15 text-blue-400 border border-blue-500/40'
+                        : 'text-gray-400 border border-white/[0.06] hover:border-white/10'
+                    }`}
+                  >
+                    Card
+                  </button>
+                </div>
+              </div>
+
+              {/* Action buttons */}
+              <div className="flex gap-2 mt-4">
+                <button
+                  type="button"
+                  onClick={() => setShowCheckout(false)}
+                  disabled={checkoutRecording}
+                  className="btn-outline flex-1 disabled:opacity-50"
+                >
+                  Keep shopping
+                </button>
+                <motion.button
+                  type="button"
+                  onClick={checkout}
+                  disabled={checkoutRecording || cartTotals.value <= 0}
+                  className="btn-gold flex-[2] disabled:opacity-50 disabled:cursor-not-allowed"
+                  whileTap={{ scale: 0.98 }}
+                >
+                  {checkoutRecording ? (
+                    <span className="flex items-center justify-center gap-2">
+                      <motion.span
+                        className="w-2 h-2 rounded-full bg-navy"
+                        animate={{ scale: [1, 1.3, 1] }}
+                        transition={{ duration: 0.6, repeat: Infinity }}
+                      />
+                      Recording…
+                    </span>
+                  ) : (
+                    `Record ${cartTotals.lineCount} sale${cartTotals.lineCount === 1 ? '' : 's'}`
+                  )}
+                </motion.button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </PageTransition>
   );
 }

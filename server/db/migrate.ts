@@ -53,6 +53,56 @@ async function migrate(): Promise<void> {
       END $$
     `);
 
+    // Group multiple sales recorded in the same cart checkout. NULL for legacy
+    // single-item sales recorded before grouping existed.
+    await client.query(`
+      DO $$ BEGIN
+        ALTER TABLE sales ADD COLUMN transaction_id UUID;
+      EXCEPTION WHEN duplicate_column THEN NULL;
+      END $$
+    `);
+    await client.query(
+      `CREATE INDEX IF NOT EXISTS idx_sales_transaction_id ON sales(transaction_id)`
+    );
+
+    // Link a sale back to the underlying SumUp card transaction (when known).
+    // Allows reconciliation and prevents double-allocation of the same tx.
+    await client.query(`
+      DO $$ BEGIN
+        ALTER TABLE sales ADD COLUMN sumup_transaction_id VARCHAR(100);
+      EXCEPTION WHEN duplicate_column THEN NULL;
+      END $$
+    `);
+    await client.query(
+      `CREATE INDEX IF NOT EXISTS idx_sales_sumup_tx ON sales(sumup_transaction_id)`
+    );
+
+    // Queue of SumUp card transactions we've seen but not yet allocated to
+    // products. The poller inserts here; the UI prompts the user to allocate
+    // each one, then moves them to the sales table.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS pending_transactions (
+        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        sumup_transaction_id VARCHAR(100) UNIQUE NOT NULL,
+        session_id UUID REFERENCES sessions(id) ON DELETE SET NULL,
+        amount DECIMAL(10, 2) NOT NULL,
+        currency VARCHAR(8) NOT NULL DEFAULT 'GBP',
+        sumup_timestamp TIMESTAMPTZ NOT NULL,
+        card_type VARCHAR(40),
+        status VARCHAR(20) NOT NULL DEFAULT 'pending'
+          CHECK (status IN ('pending', 'allocated', 'dismissed')),
+        raw JSONB,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        resolved_at TIMESTAMPTZ
+      )
+    `);
+    await client.query(
+      `CREATE INDEX IF NOT EXISTS idx_pending_tx_status ON pending_transactions(status)`
+    );
+    await client.query(
+      `CREATE INDEX IF NOT EXISTS idx_pending_tx_session ON pending_transactions(session_id)`
+    );
+
     // Add card fee tracking columns to sessions
     await client.query(`
       DO $$ BEGIN
@@ -63,6 +113,15 @@ async function migrate(): Promise<void> {
     await client.query(`
       DO $$ BEGIN
         ALTER TABLE sessions ADD COLUMN card_fee_rate DECIMAL(5, 2) NOT NULL DEFAULT 1.69;
+      EXCEPTION WHEN duplicate_column THEN NULL;
+      END $$
+    `);
+
+    // Fixed cost paid to the organiser for the pitch; nullable because older
+    // rows predate the field.
+    await client.query(`
+      DO $$ BEGIN
+        ALTER TABLE sessions ADD COLUMN stall_fee DECIMAL(10, 2);
       EXCEPTION WHEN duplicate_column THEN NULL;
       END $$
     `);

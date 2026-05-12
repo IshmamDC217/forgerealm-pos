@@ -40,6 +40,9 @@ export interface Sale {
   payment_method: 'cash' | 'card';
   timestamp: string;
   created_at: string;
+  // Shared by all sales recorded in the same cart checkout. NULL for legacy
+  // single-item sales.
+  transaction_id: string | null;
   product_name?: string;
   product_category?: string;
 }
@@ -82,6 +85,18 @@ export interface StockCarryover {
     total_sold: number;
     remaining: number;
   }[];
+}
+
+export interface PendingTransaction {
+  id: string;
+  sumup_transaction_id: string;
+  session_id: string | null;
+  amount: number | string;
+  currency: string;
+  sumup_timestamp: string;
+  card_type: string | null;
+  status: 'pending' | 'allocated' | 'dismissed';
+  created_at: string;
 }
 
 export interface StockSummary {

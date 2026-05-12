@@ -1,4 +1,5 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useMemo, useRef, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { apiGet, apiPost, apiPatch, apiDelete } from '../utils/api';
 import { formatCurrency } from '../utils/currency';
@@ -19,6 +20,48 @@ export default function Products() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [form, setForm] = useState<ProductForm>({ name: '', default_price: '', category: '' });
   const [loading, setLoading] = useState(true);
+  const [categoryOpen, setCategoryOpen] = useState(false);
+  const categoryWrapRef = useRef<HTMLDivElement>(null);
+  const categoryPopoverRef = useRef<HTMLDivElement>(null);
+  const [categoryPopoverStyle, setCategoryPopoverStyle] = useState<React.CSSProperties>({});
+
+  // Position the portaled dropdown directly under the input, and reposition
+  // on scroll/resize. Uses `position: fixed` since it lives on document.body.
+  useEffect(() => {
+    if (!categoryOpen) return;
+    const update = () => {
+      const input = categoryWrapRef.current?.querySelector('input');
+      if (!input) return;
+      const rect = input.getBoundingClientRect();
+      setCategoryPopoverStyle({
+        position: 'fixed',
+        top: rect.bottom + 4,
+        left: rect.left,
+        width: rect.width,
+      });
+    };
+    update();
+    window.addEventListener('scroll', update, true);
+    window.addEventListener('resize', update);
+    return () => {
+      window.removeEventListener('scroll', update, true);
+      window.removeEventListener('resize', update);
+    };
+  }, [categoryOpen]);
+
+  // Close the category dropdown when clicking outside the input wrap AND
+  // outside the portaled popover.
+  useEffect(() => {
+    if (!categoryOpen) return;
+    const onDown = (e: MouseEvent) => {
+      const t = e.target as Node;
+      const inWrap = categoryWrapRef.current?.contains(t);
+      const inPopover = categoryPopoverRef.current?.contains(t);
+      if (!inWrap && !inPopover) setCategoryOpen(false);
+    };
+    document.addEventListener('mousedown', onDown);
+    return () => document.removeEventListener('mousedown', onDown);
+  }, [categoryOpen]);
 
   const refresh = useCallback(async () => {
     try {
@@ -38,6 +81,7 @@ export default function Products() {
     setForm({ name: '', default_price: '', category: '' });
     setShowNew(false);
     setEditingId(null);
+    setCategoryOpen(false);
   };
 
   const saveProduct = async (e: React.FormEvent) => {
@@ -88,6 +132,16 @@ export default function Products() {
       alert(err instanceof Error ? err.message : 'Cannot delete product with existing sales');
     }
   };
+
+  // Distinct existing categories, for the datalist dropdown on the form.
+  const existingCategories = useMemo(() => {
+    const set = new Set<string>();
+    products.forEach(p => {
+      const c = (p.category || '').trim();
+      if (c) set.add(c);
+    });
+    return Array.from(set).sort((a, b) => a.localeCompare(b));
+  }, [products]);
 
   // Group by category
   const categories: Record<string, Product[]> = {};
@@ -147,7 +201,7 @@ export default function Products() {
                   className="w-full"
                   autoFocus
                 />
-                <div className="flex gap-3">
+                <div className="flex flex-col sm:flex-row gap-3">
                   <div className="flex-1">
                     <label className="text-xs text-gray-500 block mb-1">Default Price</label>
                     <input
@@ -161,14 +215,49 @@ export default function Products() {
                     />
                   </div>
                   <div className="flex-1">
-                    <label className="text-xs text-gray-500 block mb-1">Category</label>
-                    <input
-                      type="text"
-                      placeholder="e.g. Miniatures"
-                      value={form.category}
-                      onChange={e => setForm({ ...form, category: e.target.value })}
-                      className="w-full"
-                    />
+                    <label className="text-xs text-gray-500 block mb-1">
+                      Category
+                      {existingCategories.length > 0 && (
+                        <span className="hidden sm:inline text-gray-600 font-normal ml-1">
+                          (pick or type a new one)
+                        </span>
+                      )}
+                    </label>
+                    <div ref={categoryWrapRef} className="relative">
+                      <input
+                        type="text"
+                        placeholder="e.g. Miniatures"
+                        value={form.category}
+                        onChange={e => {
+                          setForm({ ...form, category: e.target.value });
+                          setCategoryOpen(true);
+                        }}
+                        onFocus={() => setCategoryOpen(true)}
+                        onKeyDown={e => {
+                          if (e.key === 'Escape') setCategoryOpen(false);
+                        }}
+                        className="w-full !pr-9"
+                        autoComplete="off"
+                      />
+                      {existingCategories.length > 0 && (
+                        <button
+                          type="button"
+                          onClick={() => setCategoryOpen(o => !o)}
+                          className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gold transition-colors p-1"
+                          aria-label="Toggle category list"
+                          tabIndex={-1}
+                        >
+                          <svg
+                            className={`w-4 h-4 transition-transform duration-200 ${categoryOpen ? 'rotate-180' : ''}`}
+                            fill="none"
+                            stroke="currentColor"
+                            viewBox="0 0 24 24"
+                          >
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                          </svg>
+                        </button>
+                      )}
+                    </div>
                   </div>
                 </div>
                 <div className="flex gap-2">
@@ -243,6 +332,63 @@ export default function Products() {
           </div>
         )}
       </div>
+
+      {/* Category dropdown — portaled to body so it escapes the form's
+          `overflow-hidden` clipping and can extend beyond the card. */}
+      {createPortal(
+        <AnimatePresence>
+          {categoryOpen && existingCategories.length > 0 && (() => {
+            const q = form.category.trim().toLowerCase();
+            const filtered = q
+              ? existingCategories.filter(c => c.toLowerCase().includes(q))
+              : existingCategories;
+            return (
+              <motion.div
+                ref={categoryPopoverRef}
+                style={{ ...categoryPopoverStyle, zIndex: 60 }}
+                initial={{ opacity: 0, y: -4 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -4 }}
+                transition={{ duration: 0.15 }}
+                className="rounded-xl bg-navy-light border border-white/[0.08] shadow-card max-h-56 overflow-y-auto backdrop-blur-md"
+              >
+                {filtered.length === 0 ? (
+                  <p className="text-xs text-gray-600 px-3 py-2.5">
+                    "{form.category}" is a new category. It'll be added when you save.
+                  </p>
+                ) : (
+                  filtered.map(c => {
+                    const isSelected = c.toLowerCase() === form.category.trim().toLowerCase();
+                    return (
+                      <button
+                        key={c}
+                        type="button"
+                        onClick={() => {
+                          setForm(prev => ({ ...prev, category: c }));
+                          setCategoryOpen(false);
+                        }}
+                        className={`w-full text-left px-3 py-2 text-sm transition-colors flex items-center justify-between ${
+                          isSelected
+                            ? 'bg-gold/10 text-gold'
+                            : 'text-gray-200 hover:bg-white/[0.04]'
+                        }`}
+                      >
+                        <span>{c}</span>
+                        {isSelected && (
+                          <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                          </svg>
+                        )}
+                      </button>
+                    );
+                  })
+                )}
+              </motion.div>
+            );
+          })()}
+        </AnimatePresence>,
+        document.body
+      )}
     </PageTransition>
   );
 }
