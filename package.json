@@ -16,6 +16,7 @@
     "create-user": "cd server && npm run create-user"
   },
   "dependencies": {
+    "@netlify/functions": "^2.8.2",
     "serverless-http": "^3.2.0"
   },
   "devDependencies": {

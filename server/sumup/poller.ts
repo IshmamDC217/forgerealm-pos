@@ -39,12 +39,12 @@ async function insertPending(tx: SumUpTransaction, sessionId: string | null): Pr
   );
 }
 
-async function tick(): Promise<void> {
+async function tick(since: Date = SINCE): Promise<void> {
   if (inFlight) return;
   if (!isConfigured()) return; // silent skip when no token
   inFlight = true;
   try {
-    const txs = await listTransactionsSince(SINCE);
+    const txs = await listTransactionsSince(since);
     if (txs.length === 0) return;
     const sessionId = await findActiveSessionId();
     for (const tx of txs) {
@@ -55,6 +55,15 @@ async function tick(): Promise<void> {
   } finally {
     inFlight = false;
   }
+}
+
+// Run one poll cycle. Used by the Netlify scheduled function — serverless
+// invocations can't keep a setInterval alive between requests, so prod
+// drives the poll via cron instead of startPoller(). insertPending() already
+// dedupes against pending_transactions and sales, so overlapping windows are
+// safe.
+export async function pollOnce(since: Date): Promise<void> {
+  await tick(since);
 }
 
 export function startPoller(): void {
