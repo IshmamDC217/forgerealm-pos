@@ -4,6 +4,7 @@ import cors from 'cors';
 import { requireAuth } from './middleware/auth';
 import authRouter from './routes/auth';
 import sessionsRouter from './routes/sessions';
+import groupsRouter from './routes/groups';
 import productsRouter from './routes/products';
 import salesRouter from './routes/sales';
 import exportRouter from './routes/export';
@@ -35,6 +36,7 @@ app.get('/api/health', (_req: Request, res: Response) => {
 
 app.use('/api/auth', authRouter);
 app.use('/api/sessions', requireAuth, sessionsRouter);
+app.use('/api/groups', requireAuth, groupsRouter);
 app.use('/api/products', requireAuth, productsRouter);
 app.use('/api/sales', requireAuth, salesRouter);
 app.use('/api/export', requireAuth, exportRouter);

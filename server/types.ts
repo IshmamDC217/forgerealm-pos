@@ -7,6 +7,17 @@ export interface Session {
   status: 'active' | 'closed';
   card_fee_applied: boolean;
   card_fee_rate: number;
+  group_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+// Umbrella for stalls run on the same event day at different locations.
+export interface SessionGroup {
+  id: string;
+  name: string;
+  date: string;
+  notes: string | null;
   created_at: string;
   updated_at: string;
 }

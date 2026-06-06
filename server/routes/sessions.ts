@@ -7,12 +7,13 @@ const router = Router();
 router.get('/', async (_req: Request, res: Response) => {
   try {
     const result = await query(
-      `SELECT s.*,
+      `SELECT s.*, g.name AS group_name, g.date AS group_date,
         COALESCE(SUM(sa.quantity * sa.price_charged), 0) AS total_revenue,
         COALESCE(SUM(sa.quantity), 0) AS total_units
        FROM sessions s
+       LEFT JOIN session_groups g ON g.id = s.group_id
        LEFT JOIN sales sa ON sa.session_id = s.id
-       GROUP BY s.id
+       GROUP BY s.id, g.id
        ORDER BY s.date DESC, s.created_at DESC`
     );
     res.json(result.rows);
@@ -49,7 +50,10 @@ router.get('/:id', async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
     const sessionResult = await query(
-      'SELECT * FROM sessions WHERE id = $1',
+      `SELECT s.*, g.name AS group_name, g.date AS group_date
+       FROM sessions s
+       LEFT JOIN session_groups g ON g.id = s.group_id
+       WHERE s.id = $1`,
       [id]
     );
     if (sessionResult.rows.length === 0) {
@@ -101,7 +105,7 @@ router.get('/:id', async (req: Request, res: Response) => {
 router.patch('/:id', async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-    const { name, location, notes, status, card_fee_applied, card_fee_rate } = req.body;
+    const { name, location, notes, status, card_fee_applied, card_fee_rate, group_id } = req.body;
 
     const fields: string[] = [];
     const values: unknown[] = [];
@@ -113,6 +117,7 @@ router.patch('/:id', async (req: Request, res: Response) => {
     if (status !== undefined) { fields.push(`status = $${idx++}`); values.push(status); }
     if (card_fee_applied !== undefined) { fields.push(`card_fee_applied = $${idx++}`); values.push(card_fee_applied); }
     if (card_fee_rate !== undefined) { fields.push(`card_fee_rate = $${idx++}`); values.push(card_fee_rate); }
+    if (group_id !== undefined) { fields.push(`group_id = $${idx++}`); values.push(group_id); }
 
     if (fields.length === 0) {
       res.status(400).json({ error: 'No fields to update' });
@@ -132,6 +137,15 @@ router.patch('/:id', async (req: Request, res: Response) => {
       return;
     }
     const updated = result.rows[0];
+
+    // Leaving a group can strand an empty session_groups row — sweep them.
+    if (group_id === null) {
+      await query(
+        `DELETE FROM session_groups g
+         WHERE NOT EXISTS (SELECT 1 FROM sessions s WHERE s.group_id = g.id)`
+      );
+    }
+
     res.json(updated);
   } catch (err) {
     console.error('Error updating session:', err);

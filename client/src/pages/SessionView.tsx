@@ -37,6 +37,11 @@ export default function SessionView() {
   const [showEditSession, setShowEditSession] = useState(false);
   const [editSessionForm, setEditSessionForm] = useState({ name: '', location: '', notes: '' });
   const [confirmDelete, setConfirmDelete] = useState(false);
+  // Event-day grouping controls (inside the edit modal).
+  const [editGroupName, setEditGroupName] = useState('');
+  const [groupTargetId, setGroupTargetId] = useState('');
+  const [groupNameInput, setGroupNameInput] = useState('');
+  const [groupBusy, setGroupBusy] = useState(false);
 
   // Stock state
   const [stockItems, setStockItems] = useState<StockItem[]>([]);
@@ -404,7 +409,71 @@ export default function SessionView() {
       location: session.location || '',
       notes: session.notes || '',
     });
+    setEditGroupName(session.group_name || '');
+    setGroupTargetId('');
+    setGroupNameInput('');
     setShowEditSession(true);
+  };
+
+  // --- Event-day grouping -------------------------------------------------
+  // Stalls run on the same day at different locations are umbrella'd under a
+  // session group; each stall keeps its own stats.
+  const groupSiblings = session?.group_id
+    ? sessions.filter(s => s.group_id === session.group_id && s.id !== id)
+    : [];
+
+  const joinGroup = async () => {
+    if (!id || !groupTargetId || groupBusy) return;
+    const target = sessions.find(s => s.id === groupTargetId);
+    if (!target) return;
+    setGroupBusy(true);
+    try {
+      if (target.group_id) {
+        // Target already belongs to a group — join it.
+        await apiPatch(`/sessions/${id}`, { group_id: target.group_id });
+      } else {
+        await apiPost('/groups', {
+          name: groupNameInput.trim(),
+          session_ids: [id, groupTargetId],
+        });
+      }
+      setGroupTargetId('');
+      setGroupNameInput('');
+      fetchData();
+      refreshSessions();
+    } catch {
+      console.error('Failed to group sessions');
+    } finally {
+      setGroupBusy(false);
+    }
+  };
+
+  const leaveGroup = async () => {
+    if (!id || groupBusy) return;
+    setGroupBusy(true);
+    try {
+      await apiPatch(`/sessions/${id}`, { group_id: null });
+      fetchData();
+      refreshSessions();
+    } catch {
+      console.error('Failed to leave group');
+    } finally {
+      setGroupBusy(false);
+    }
+  };
+
+  const renameGroup = async () => {
+    if (!session?.group_id || !editGroupName.trim() || groupBusy) return;
+    setGroupBusy(true);
+    try {
+      await apiPatch(`/groups/${session.group_id}`, { name: editGroupName.trim() });
+      fetchData();
+      refreshSessions();
+    } catch {
+      console.error('Failed to rename group');
+    } finally {
+      setGroupBusy(false);
+    }
   };
 
   const toggleCardFee = async () => {
@@ -625,6 +694,29 @@ export default function SessionView() {
               {session.location && `${session.location} \u00b7 `}
               {new Date(session.date).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}
             </p>
+            {session.group_id && (
+              <p className="text-xs mt-1.5 flex items-center gap-1.5 flex-wrap">
+                <span className="text-gold/90 bg-gold/10 border border-gold/20 px-2 py-0.5 rounded-full font-medium">
+                  {session.group_name || 'Grouped'}
+                </span>
+                {groupSiblings.length > 0 && (
+                  <span className="text-gray-500">
+                    with{' '}
+                    {groupSiblings.map((s, i) => (
+                      <span key={s.id}>
+                        {i > 0 && ', '}
+                        <button
+                          onClick={() => navigate(`/session/${s.id}`)}
+                          className="text-gold/80 hover:text-gold hover:underline transition-colors"
+                        >
+                          {s.name}
+                        </button>
+                      </span>
+                    ))}
+                  </span>
+                )}
+              </p>
+            )}
           </div>
         </motion.div>
 
@@ -682,6 +774,98 @@ export default function SessionView() {
                   className="w-full"
                   rows={2}
                 />
+
+                {/* Event-day grouping: bundle stalls run on the same day at
+                    different locations into one session. */}
+                <div className="border-t border-white/[0.06] pt-3 space-y-2">
+                  <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wider">
+                    Event-day group
+                  </h4>
+                  {session.group_id ? (
+                    <>
+                      <div className="flex gap-2">
+                        <input
+                          type="text"
+                          placeholder="Group name"
+                          value={editGroupName}
+                          onChange={e => setEditGroupName(e.target.value)}
+                          className="w-full text-sm"
+                        />
+                        <button
+                          type="button"
+                          onClick={renameGroup}
+                          disabled={groupBusy || !editGroupName.trim()}
+                          className="btn-outline text-xs !py-2 px-3 flex-shrink-0 disabled:opacity-50"
+                        >
+                          Rename
+                        </button>
+                      </div>
+                      {groupSiblings.length > 0 && (
+                        <p className="text-xs text-gray-600">
+                          Grouped with {groupSiblings.map(s => s.name).join(', ')}
+                        </p>
+                      )}
+                      <button
+                        type="button"
+                        onClick={leaveGroup}
+                        disabled={groupBusy}
+                        className="text-xs text-red-400 hover:text-red-300 transition-colors disabled:opacity-50"
+                      >
+                        Remove this stall from the group
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      <select
+                        value={groupTargetId}
+                        onChange={e => setGroupTargetId(e.target.value)}
+                        className="w-full text-sm"
+                      >
+                        <option value="">Group with another stall…</option>
+                        {sessions
+                          .filter(s => s.id !== id)
+                          .map(s => (
+                            <option key={s.id} value={s.id}>
+                              {s.name}
+                              {s.group_name ? ` (in ${s.group_name})` : ''}
+                              {' · '}
+                              {new Date(s.date).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}
+                            </option>
+                          ))}
+                      </select>
+                      {groupTargetId && (() => {
+                        const target = sessions.find(s => s.id === groupTargetId);
+                        const joinsExisting = !!target?.group_id;
+                        return (
+                          <>
+                            {!joinsExisting && (
+                              <input
+                                type="text"
+                                placeholder='Group name (e.g. "Session 10")'
+                                value={groupNameInput}
+                                onChange={e => setGroupNameInput(e.target.value)}
+                                className="w-full text-sm"
+                              />
+                            )}
+                            <button
+                              type="button"
+                              onClick={joinGroup}
+                              disabled={groupBusy || (!joinsExisting && !groupNameInput.trim())}
+                              className="btn-outline w-full text-xs !py-2 disabled:opacity-50"
+                            >
+                              {groupBusy
+                                ? 'Working…'
+                                : joinsExisting
+                                  ? `Join "${target?.group_name}"`
+                                  : 'Create group'}
+                            </button>
+                          </>
+                        );
+                      })()}
+                    </>
+                  )}
+                </div>
+
                 <div className="flex gap-2">
                   <button type="submit" className="btn-gold flex-1">Save</button>
                   <button type="button" onClick={() => setShowEditSession(false)} className="btn-outline flex-1">Cancel</button>

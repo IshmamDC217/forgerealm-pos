@@ -126,6 +126,31 @@ async function migrate(): Promise<void> {
       END $$
     `);
 
+    // Event-day grouping: several stalls run on the same day at different
+    // locations roll up into one session_group ("Session 10"). Stalls keep
+    // their own rows and stats; the group is purely an umbrella.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS session_groups (
+        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        name VARCHAR(255) NOT NULL,
+        date DATE NOT NULL DEFAULT CURRENT_DATE,
+        notes TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
+
+    // Deleting a group just ungroups its stalls (SET NULL), never deletes data.
+    await client.query(`
+      DO $$ BEGIN
+        ALTER TABLE sessions ADD COLUMN group_id UUID REFERENCES session_groups(id) ON DELETE SET NULL;
+      EXCEPTION WHEN duplicate_column THEN NULL;
+      END $$
+    `);
+    await client.query(
+      `CREATE INDEX IF NOT EXISTS idx_sessions_group_id ON sessions(group_id)`
+    );
+
     await client.query(`
       CREATE TABLE IF NOT EXISTS users (
         id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),

@@ -3,17 +3,26 @@ import { motion } from 'framer-motion';
 import { useNavigate } from 'react-router-dom';
 import type { Session } from '../types';
 import { formatCurrency } from '../utils/currency';
+import { clusterSessions, revenueOf } from '../utils/groups';
 
 interface Props {
   sessions: Session[];
   currentSessionId: string;
 }
 
-const revenueOf = (s: Session): number => {
-  const raw = s.stats?.total_revenue ?? s.total_revenue ?? 0;
-  const n = typeof raw === 'string' ? parseFloat(raw) : raw;
-  return Number.isFinite(n) ? n : 0;
-};
+// One plotted point: a lone stall, or a multi-stall event day collapsed into
+// a single point whose value is the AVERAGE of its stalls' revenues — so a
+// two-stall day stays comparable with single-stall days instead of
+// double-counting.
+interface ChartPoint {
+  key: string;
+  name: string;
+  location: string | null;
+  date: string;
+  revenue: number;
+  sessions: Session[];
+  isGroup: boolean;
+}
 
 // Chart area inside the 0–100 viewBox.
 const Y_TOP = 12;
@@ -51,42 +60,64 @@ export default function StallComparison({ sessions, currentSessionId }: Props) {
   const navigate = useNavigate();
   const [hoverIdx, setHoverIdx] = useState<number | null>(null);
 
-  const data = useMemo(
+  const data = useMemo<ChartPoint[]>(
     () =>
-      [...sessions].sort(
-        (a, b) => new Date(a.date).getTime() - new Date(b.date).getTime()
-      ),
+      clusterSessions(sessions)
+        .map(c => {
+          const total = c.sessions.reduce((acc, s) => acc + revenueOf(s), 0);
+          return c.group
+            ? {
+                key: c.key,
+                name: c.group.name,
+                location: null,
+                date: c.group.date,
+                revenue: total / c.sessions.length,
+                sessions: c.sessions,
+                isGroup: true,
+              }
+            : {
+                key: c.key,
+                name: c.sessions[0].name,
+                location: c.sessions[0].location,
+                date: c.sessions[0].date,
+                revenue: total,
+                sessions: c.sessions,
+                isGroup: false,
+              };
+        })
+        .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime()),
     [sessions]
   );
 
   const yMax = useMemo(() => {
-    const peak = Math.max(0, ...data.map(revenueOf));
+    const peak = Math.max(0, ...data.map(p => p.revenue));
     return niceMax(peak || 1);
   }, [data]);
 
   const yTicks = useMemo(() => [0, 0.25, 0.5, 0.75, 1].map(r => r * yMax), [yMax]);
 
   const positions = useMemo<Pt[]>(() => {
-    return data.map((s, i) => {
+    return data.map((p, i) => {
       const x =
         data.length === 1
           ? (X_LEFT + X_RIGHT) / 2
           : X_LEFT + (i / (data.length - 1)) * (X_RIGHT - X_LEFT);
-      const ratio = revenueOf(s) / yMax;
+      const ratio = p.revenue / yMax;
       const y = Y_BOT - ratio * (Y_BOT - Y_TOP);
       return { x, y };
     });
   }, [data, yMax]);
 
-  const currentIdx = data.findIndex(s => s.id === currentSessionId);
-  const currentSession = currentIdx >= 0 ? data[currentIdx] : null;
-  const currentRevenue = currentSession ? revenueOf(currentSession) : 0;
+  // The current session may be a member of a grouped point.
+  const currentIdx = data.findIndex(p => p.sessions.some(s => s.id === currentSessionId));
+  const currentPoint = currentIdx >= 0 ? data[currentIdx] : null;
+  const currentRevenue = currentPoint ? currentPoint.revenue : 0;
 
   const avgRevenue = useMemo(
     () =>
       data.length === 0
         ? 0
-        : data.reduce((acc, s) => acc + revenueOf(s), 0) / data.length,
+        : data.reduce((acc, p) => acc + p.revenue, 0) / data.length,
     [data]
   );
 
@@ -97,14 +128,13 @@ export default function StallComparison({ sessions, currentSessionId }: Props) {
 
   const vsAvg = avgRevenue > 0 ? ((currentRevenue - avgRevenue) / avgRevenue) * 100 : 0;
   const isBest =
-    data.every(s => s.id === currentSessionId || revenueOf(s) <= currentRevenue) &&
+    data.every((p, i) => i === currentIdx || p.revenue <= currentRevenue) &&
     currentRevenue > 0;
 
   // Focus index is either the hovered dot or the current session.
   const focusIdx = hoverIdx ?? currentIdx;
   const focusPt = focusIdx >= 0 ? positions[focusIdx] : null;
-  const focusSession = focusIdx >= 0 ? data[focusIdx] : null;
-  const focusRevenue = focusSession ? revenueOf(focusSession) : 0;
+  const focusPoint = focusIdx >= 0 ? data[focusIdx] : null;
 
   return (
     <motion.div
@@ -134,7 +164,7 @@ export default function StallComparison({ sessions, currentSessionId }: Props) {
             />
           </h3>
           <p className="text-[11px] text-gray-500 mt-0.5">
-            Revenue across all {data.length} stalls
+            Revenue across all {data.length} sessions &middot; multi-stall days averaged
           </p>
         </div>
         <div className="flex items-center gap-3">
@@ -234,15 +264,17 @@ export default function StallComparison({ sessions, currentSessionId }: Props) {
           </svg>
 
           {/* Dots */}
-          {data.map((s, i) => {
+          {data.map((p, i) => {
             const pt = positions[i];
-            const revenue = revenueOf(s);
-            const isCurrent = s.id === currentSessionId;
+            const isCurrent = i === currentIdx;
             const isHovered = hoverIdx === i;
+            const title = p.isGroup
+              ? `${p.name} · avg of ${p.sessions.length} stalls · ${formatCurrency(p.revenue)}`
+              : `${p.name}${p.location ? ` · ${p.location}` : ''} · ${formatCurrency(p.revenue)}`;
             return (
               <motion.button
-                key={s.id}
-                onClick={() => !isCurrent && navigate(`/session/${s.id}`)}
+                key={p.key}
+                onClick={() => !isCurrent && navigate(`/session/${p.sessions[0].id}`)}
                 onMouseEnter={() => setHoverIdx(i)}
                 onMouseLeave={() => setHoverIdx(null)}
                 onFocus={() => setHoverIdx(i)}
@@ -250,7 +282,7 @@ export default function StallComparison({ sessions, currentSessionId }: Props) {
                 disabled={isCurrent}
                 className="group absolute -translate-x-1/2 -translate-y-1/2 cursor-pointer disabled:cursor-default"
                 style={{ left: `${pt.x}%`, top: `${pt.y}%` }}
-                title={`${s.name}${s.location ? ` · ${s.location}` : ''} · ${formatCurrency(revenue)}`}
+                title={title}
                 initial={{ opacity: 0, scale: 0 }}
                 animate={{ opacity: 1, scale: 1 }}
                 transition={{ delay: 0.4 + i * 0.05, duration: 0.35, ease: 'backOut' }}
@@ -274,6 +306,17 @@ export default function StallComparison({ sessions, currentSessionId }: Props) {
                       style={{ boxShadow: '0 0 14px rgba(212, 168, 67, 0.9)' }}
                     />
                   </span>
+                ) : p.isGroup ? (
+                  // Grouped day: ring-style dot so multi-stall points read
+                  // differently from single stalls.
+                  <span
+                    className="block w-2.5 h-2.5 rounded-full border-2 border-gold-light bg-navy transition-shadow"
+                    style={{
+                      boxShadow: isHovered
+                        ? '0 0 12px rgba(212, 168, 67, 0.7)'
+                        : '0 0 6px rgba(212, 168, 67, 0.4)',
+                    }}
+                  />
                 ) : (
                   <span
                     className="block w-2 h-2 rounded-full bg-gold-light transition-shadow"
@@ -290,7 +333,7 @@ export default function StallComparison({ sessions, currentSessionId }: Props) {
 
           {/* Floating tooltip over the focused stall. Anchors to whichever
               side keeps it inside the chart area. */}
-          {focusPt && focusSession && (() => {
+          {focusPt && focusPoint && (() => {
             const anchor: 'left' | 'right' | 'center' =
               focusPt.x > 78 ? 'right' : focusPt.x < 22 ? 'left' : 'center';
             const translateX = anchor === 'right' ? '-100%' : anchor === 'left' ? '0%' : '-50%';
@@ -310,13 +353,28 @@ export default function StallComparison({ sessions, currentSessionId }: Props) {
               >
                 <div className="bg-navy-light/95 backdrop-blur-md border border-gold/25 rounded-lg shadow-card px-2.5 py-1.5 whitespace-nowrap">
                   <p className="text-[9px] uppercase tracking-wider text-gray-500 leading-tight">
-                    {new Date(focusSession.date).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}
+                    {new Date(focusPoint.date).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}
                   </p>
                   <p className="text-xs font-semibold text-white leading-tight max-w-[160px] truncate">
-                    {focusSession.name}
+                    {focusPoint.name}
                   </p>
+                  {focusPoint.isGroup && (
+                    <div className="mt-0.5 space-y-px">
+                      {focusPoint.sessions.map(s => (
+                        <p key={s.id} className="text-[10px] text-gray-400 leading-tight flex items-center justify-between gap-3">
+                          <span className="max-w-[120px] truncate">{s.name}</span>
+                          <span className="tabular-nums text-gray-300">{formatCurrency(revenueOf(s))}</span>
+                        </p>
+                      ))}
+                    </div>
+                  )}
                   <p className="text-sm font-bold text-gold leading-tight tabular-nums">
-                    {formatCurrency(focusRevenue)}
+                    {formatCurrency(focusPoint.revenue)}
+                    {focusPoint.isGroup && (
+                      <span className="ml-1 text-[9px] font-medium text-gray-500 uppercase tracking-wide">
+                        avg of {focusPoint.sessions.length}
+                      </span>
+                    )}
                   </p>
                 </div>
               </motion.div>
@@ -327,9 +385,9 @@ export default function StallComparison({ sessions, currentSessionId }: Props) {
 
       <div className="relative mt-2 h-3 w-full pl-14 pr-6">
         <div className="relative w-full h-full">
-          {data.map((s, i) => {
+          {data.map((p, i) => {
             const pt = positions[i];
-            const isCurrent = s.id === currentSessionId;
+            const isCurrent = i === currentIdx;
             const isFocused = focusIdx === i;
             const stride = data.length > 8 ? Math.ceil(data.length / 6) : 1;
             if (
@@ -341,13 +399,13 @@ export default function StallComparison({ sessions, currentSessionId }: Props) {
             ) {
               return null;
             }
-            const dateLabel = new Date(s.date).toLocaleDateString('en-GB', {
+            const dateLabel = new Date(p.date).toLocaleDateString('en-GB', {
               day: 'numeric',
               month: 'short',
             });
             return (
               <span
-                key={s.id}
+                key={p.key}
                 className={`absolute -translate-x-1/2 text-[10px] whitespace-nowrap transition-colors duration-200 ${
                   isCurrent
                     ? 'text-gold-light font-semibold'

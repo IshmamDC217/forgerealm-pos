@@ -7,11 +7,25 @@ export interface Session {
   status: 'active' | 'closed';
   card_fee_applied: boolean;
   card_fee_rate: number;
+  // Set when this stall is part of a multi-location event day. group_name and
+  // group_date are joined in by the API for display.
+  group_id: string | null;
+  group_name?: string | null;
+  group_date?: string | null;
   created_at: string;
   updated_at: string;
   total_revenue?: number;
   total_units?: number;
   stats?: SessionStats;
+}
+
+export interface SessionGroup {
+  id: string;
+  name: string;
+  date: string;
+  notes: string | null;
+  created_at: string;
+  updated_at: string;
 }
 
 export interface SessionStats {
