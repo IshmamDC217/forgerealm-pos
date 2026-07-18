@@ -12,6 +12,9 @@ export interface Session {
   group_id: string | null;
   group_name?: string | null;
   group_date?: string | null;
+  // Set once a stall's leftover stock has been returned to the central store,
+  // so the "return to inventory" action can't double-credit.
+  stock_returned_at: string | null;
   created_at: string;
   updated_at: string;
   total_revenue?: number;
@@ -99,6 +102,30 @@ export interface StockCarryover {
     total_sold: number;
     remaining: number;
   }[];
+}
+
+// A product row on the central Inventory screen. `quantity` is what's in the
+// store; `deployed` is how many units are currently out on active stalls.
+export interface GlobalStockItem {
+  product_id: string;
+  product_name: string;
+  product_category: string | null;
+  default_price: number;
+  quantity: number;
+  deployed: number;
+}
+
+// Result of moving stock from the store onto a stall.
+export interface StockTransferResult {
+  moved: { product_id: string; quantity: number }[];
+  session_stock: StockItem[];
+  global: GlobalStockItem[];
+}
+
+// Result of returning a stall's leftovers to the store.
+export interface StockReturnResult {
+  returned: { product_id: string; quantity: number }[];
+  global: GlobalStockItem[];
 }
 
 export interface PendingTransaction {

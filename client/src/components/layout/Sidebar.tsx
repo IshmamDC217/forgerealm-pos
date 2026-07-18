@@ -234,6 +234,18 @@ export default function Sidebar({ onCloseMobile }: SidebarProps) {
           </svg>
           Manage Products
         </NavLink>
+        <NavLink
+          to="/inventory"
+          onClick={onCloseMobile}
+          className={({ isActive }) =>
+            `sidebar-item text-sm ${isActive ? 'active' : 'text-gray-400 hover:text-gray-200'}`
+          }
+        >
+          <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
+          </svg>
+          Inventory
+        </NavLink>
         <button
           onClick={logout}
           className="sidebar-item text-sm text-gray-400 hover:text-red-400 w-full"

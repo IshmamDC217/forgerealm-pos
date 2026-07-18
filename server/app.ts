@@ -9,6 +9,7 @@ import productsRouter from './routes/products';
 import salesRouter from './routes/sales';
 import exportRouter from './routes/export';
 import stockRouter from './routes/stock';
+import globalStockRouter from './routes/globalStock';
 import sumupRouter from './routes/sumup';
 
 function parseAllowedOrigins(raw: string | undefined): string[] {
@@ -41,6 +42,7 @@ app.use('/api/products', requireAuth, productsRouter);
 app.use('/api/sales', requireAuth, salesRouter);
 app.use('/api/export', requireAuth, exportRouter);
 app.use('/api/stock', requireAuth, stockRouter);
+app.use('/api/global-stock', requireAuth, globalStockRouter);
 app.use('/api/sumup', requireAuth, sumupRouter);
 
 app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
