@@ -58,15 +58,10 @@ export default function Inventory() {
     [items, form]
   );
 
-  const totals = useMemo(() => {
-    let store = 0;
-    let deployed = 0;
-    for (const it of items) {
-      store += form[it.product_id] ?? (parseInt(String(it.quantity)) || 0);
-      deployed += parseInt(String(it.deployed)) || 0;
-    }
-    return { store, deployed, total: store + deployed };
-  }, [items, form]);
+  const totalUnits = useMemo(
+    () => items.reduce((sum, it) => sum + (form[it.product_id] ?? (parseInt(String(it.quantity)) || 0)), 0),
+    [items, form]
+  );
 
   const matches = (it: GlobalStockItem): boolean => {
     const q = search.trim().toLowerCase();
@@ -101,23 +96,13 @@ export default function Inventory() {
           <div>
             <h1 className="text-2xl font-bold text-white">Inventory</h1>
             <p className="text-gray-500 text-sm mt-1">
-              Your current stock in the store. New stalls pull from here.
+              Shared stock across every stall. Sales anywhere draw it down live.
             </p>
           </div>
-        </div>
-
-        {/* Totals */}
-        <div className="grid grid-cols-3 gap-2 mb-5">
-          {[
-            { label: 'In store', value: totals.store, color: 'text-white' },
-            { label: 'On stalls', value: totals.deployed, color: 'text-orange-400' },
-            { label: 'Total units', value: totals.total, color: 'text-gold' },
-          ].map(stat => (
-            <div key={stat.label} className="stat-card">
-              <p className="text-gray-500 text-xs mb-1">{stat.label}</p>
-              <p className={`text-xl font-bold ${stat.color}`}>{stat.value}</p>
-            </div>
-          ))}
+          <div className="stat-card text-right flex-shrink-0">
+            <p className="text-gray-500 text-xs mb-1">Total units</p>
+            <p className="text-xl font-bold text-gold">{totalUnits}</p>
+          </div>
         </div>
 
         {/* Search */}
@@ -174,9 +159,6 @@ export default function Inventory() {
                       <div key={it.product_id} className="flex items-center justify-between py-2 px-2 rounded-xl hover:bg-white/[0.03] transition-colors">
                         <div className="min-w-0 flex-1">
                           <p className="text-sm text-white truncate">{it.product_name}</p>
-                          {parseInt(String(it.deployed)) > 0 && (
-                            <p className="text-[11px] text-orange-400/80">{it.deployed} out on stalls</p>
-                          )}
                         </div>
                         <div className="flex items-center gap-2 flex-shrink-0">
                           <motion.button

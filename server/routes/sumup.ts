@@ -1,5 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { pool, query } from '../db';
+import { adjustGlobalStock } from '../lib/stock';
 
 const router = Router();
 
@@ -96,6 +97,8 @@ router.post('/allocate/:id', async (req: Request, res: Response) => {
           p.sumup_transaction_id,
         ]
       );
+      // Allocating a card payment to products is a sale — draw it from stock.
+      await adjustGlobalStock(client, it.product_id, -Number(it.quantity));
     }
 
     await client.query(
