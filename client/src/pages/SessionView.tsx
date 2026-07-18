@@ -6,7 +6,7 @@ import { apiGet, apiPost, apiPatch, apiDelete, apiPut } from '../utils/api';
 import { usePolling } from '../utils/usePolling';
 import { API_BASE } from '../utils/config';
 import { formatCurrency } from '../utils/currency';
-import type { Session, Product, Sale, SessionStats, StockItem, StockSummary, StockCarryover } from '../types';
+import type { Session, Product, Sale, SessionStats, StockItem, StockSummary, StockCarryover, GlobalStockItem, StockTransferResult, StockReturnResult } from '../types';
 import PageTransition from '../components/PageTransition';
 import HomeButton from '../components/HomeButton';
 import StallComparison from '../components/StallComparison';
@@ -56,6 +56,16 @@ export default function SessionView() {
   const [showFinalCount, setShowFinalCount] = useState(false);
   const [finalCountForm, setFinalCountForm] = useState<Record<string, number>>({});
   const [savingFinalCount, setSavingFinalCount] = useState(false);
+
+  // Stock transfer from central inventory
+  const [showTransfer, setShowTransfer] = useState(false);
+  const [globalStock, setGlobalStock] = useState<GlobalStockItem[]>([]);
+  const [transferForm, setTransferForm] = useState<Record<string, number>>({});
+  const [loadingGlobal, setLoadingGlobal] = useState(false);
+  const [transferring, setTransferring] = useState(false);
+  const [transferSearch, setTransferSearch] = useState('');
+  const [returning, setReturning] = useState(false);
+  const [returnError, setReturnError] = useState<string | null>(null);
 
   // Search state
   const [productSearch, setProductSearch] = useState('');
@@ -595,6 +605,73 @@ export default function SessionView() {
 
   const hasFinalCounts = stockItems.some(si => si.final_quantity !== null);
 
+  // --- Stock transfer from central inventory -----------------------------
+  // Pull units out of the global store onto this stall. Defaults each product
+  // to sending everything available, so the common "load the van" flow is one
+  // tap. Sending decrements the store and adds to this stall's starting stock.
+  const openTransfer = async () => {
+    setShowTransfer(true);
+    setTransferSearch('');
+    setLoadingGlobal(true);
+    try {
+      const data = await apiGet<GlobalStockItem[]>('/global-stock');
+      setGlobalStock(data);
+      const form: Record<string, number> = {};
+      for (const it of data) form[it.product_id] = parseInt(String(it.quantity)) || 0;
+      setTransferForm(form);
+    } catch {
+      setGlobalStock([]);
+    } finally {
+      setLoadingGlobal(false);
+    }
+  };
+
+  const saveTransfer = async () => {
+    if (!id) return;
+    setTransferring(true);
+    try {
+      const items = Object.entries(transferForm)
+        .map(([product_id, quantity]) => ({ product_id, quantity }))
+        .filter(i => i.quantity > 0);
+      const result = await apiPost<StockTransferResult>('/global-stock/transfer', {
+        session_id: id,
+        items,
+      });
+      if (result?.session_stock) setStockItems(result.session_stock);
+      setShowTransfer(false);
+    } catch {
+      console.error('Failed to transfer stock');
+    } finally {
+      setTransferring(false);
+    }
+  };
+
+  const returnStock = async () => {
+    if (!id || returning) return;
+    setReturning(true);
+    setReturnError(null);
+    try {
+      await apiPost<StockReturnResult>('/global-stock/return', { session_id: id });
+      // Reflect the guard locally, then re-sync from the server.
+      setSession(prev => (prev ? { ...prev, stock_returned_at: new Date().toISOString() } : prev));
+      fetchData();
+    } catch (err) {
+      setReturnError(err instanceof Error ? err.message : 'Failed to return stock');
+    } finally {
+      setReturning(false);
+    }
+  };
+
+  const stockReturned = !!session?.stock_returned_at;
+
+  // Total units left on this stall right now (what a return would send back).
+  const remainingUnits = stockItems.reduce((sum, si) => {
+    const initial = parseInt(String(si.initial_quantity)) || 0;
+    const sold = parseInt(String(si.total_sold)) || 0;
+    const finalQ = si.final_quantity !== null ? parseInt(String(si.final_quantity)) : null;
+    return sum + Math.max(0, finalQ !== null ? finalQ : initial - sold);
+  }, 0);
+
   if (loading) {
     return (
       <div className="flex items-center justify-center min-h-[50vh] gap-3 text-gray-500">
@@ -1022,6 +1099,169 @@ export default function SessionView() {
           )}
         </AnimatePresence>
 
+        {/* Stock from Inventory (transfer) Modal */}
+        <AnimatePresence>
+          {showTransfer && (
+            <motion.div
+              className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setShowTransfer(false)}
+            >
+              <motion.div
+                initial={{ opacity: 0, scale: 0.95, y: 10 }}
+                animate={{ opacity: 1, scale: 1, y: 0 }}
+                exit={{ opacity: 0, scale: 0.95, y: 10 }}
+                transition={{ duration: 0.2 }}
+                onClick={e => e.stopPropagation()}
+                className="card w-full max-w-lg max-h-[80vh] flex flex-col"
+              >
+                <div className="flex items-center justify-between mb-3">
+                  <div>
+                    <h3 className="font-semibold text-gold text-sm">Stock from Inventory</h3>
+                    <p className="text-xs text-gray-500 mt-0.5">
+                      Send units from your central store onto this stall. This <span className="text-gray-400">adds</span> to the stall and reduces your inventory.
+                    </p>
+                  </div>
+                  <button
+                    onClick={() => {
+                      const cleared: Record<string, number> = {};
+                      globalStock.forEach(it => { cleared[it.product_id] = 0; });
+                      setTransferForm(cleared);
+                    }}
+                    className="text-xs text-gray-500 hover:text-red-400 transition-colors flex-shrink-0"
+                  >
+                    Clear All
+                  </button>
+                </div>
+
+                {loadingGlobal ? (
+                  <div className="flex items-center justify-center py-10 gap-2 text-gray-500">
+                    <motion.div
+                      className="w-2 h-2 rounded-full bg-gold/50"
+                      animate={{ scale: [1, 1.5, 1], opacity: [0.3, 1, 0.3] }}
+                      transition={{ duration: 1, repeat: Infinity }}
+                    />
+                    Loading inventory...
+                  </div>
+                ) : globalStock.every(it => (parseInt(String(it.quantity)) || 0) === 0) ? (
+                  <div className="text-center py-10 px-4">
+                    <p className="text-sm text-gray-400 mb-1">Your inventory is empty</p>
+                    <p className="text-xs text-gray-600">
+                      Set your current stock on the Inventory page first, then pull it onto stalls here.
+                    </p>
+                  </div>
+                ) : (
+                  <>
+                    <div className="overflow-y-auto flex-1 -mx-1 px-1">
+                      <div className="sticky top-0 z-10 bg-navy-light/95 backdrop-blur-md pb-3 -mx-1 px-1">
+                        <div className="relative">
+                          <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500 pointer-events-none" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-4.35-4.35M11 19a8 8 0 100-16 8 8 0 000 16z" />
+                          </svg>
+                          <input
+                            type="text"
+                            value={transferSearch}
+                            onChange={e => setTransferSearch(e.target.value)}
+                            placeholder="Search inventory..."
+                            className="w-full !pl-9 !pr-3 text-sm"
+                          />
+                        </div>
+                      </div>
+
+                      {(() => {
+                        const q = transferSearch.trim().toLowerCase();
+                        const visible = globalStock.filter(it =>
+                          !q ||
+                          it.product_name.toLowerCase().includes(q) ||
+                          (it.product_category || '').toLowerCase().includes(q)
+                        );
+                        if (visible.length === 0) {
+                          return <p className="text-gray-600 text-sm text-center py-6">No products match "{transferSearch}"</p>;
+                        }
+                        const cats: Record<string, GlobalStockItem[]> = {};
+                        visible.forEach(it => {
+                          const cat = it.product_category || 'Other';
+                          if (!cats[cat]) cats[cat] = [];
+                          cats[cat].push(it);
+                        });
+                        return (
+                          <div className="space-y-4">
+                            {Object.entries(cats).map(([cat, prods]) => (
+                              <div key={cat}>
+                                <p className="section-title text-gray-600 mb-2">{cat}</p>
+                                <div className="space-y-1.5">
+                                  {prods.map(it => {
+                                    const available = parseInt(String(it.quantity)) || 0;
+                                    const sending = Math.min(transferForm[it.product_id] ?? 0, available);
+                                    return (
+                                      <div key={it.product_id} className="flex items-center justify-between py-1.5 px-2 rounded-xl hover:bg-white/[0.03] transition-colors">
+                                        <div className="flex-1 min-w-0">
+                                          <span className="text-sm text-white">{it.product_name}</span>
+                                          <span className="text-xs text-gray-600 ml-2">{available} in store</span>
+                                        </div>
+                                        <div className="flex items-center gap-2 flex-shrink-0">
+                                          <motion.button
+                                            type="button"
+                                            onClick={() => setTransferForm(f => ({ ...f, [it.product_id]: Math.max(0, (f[it.product_id] || 0) - 1) }))}
+                                            className="btn-outline !px-2 !py-1 text-sm"
+                                            whileTap={{ scale: 0.9 }}
+                                          >-</motion.button>
+                                          <input
+                                            type="number"
+                                            value={sending}
+                                            onChange={e => setTransferForm(f => ({ ...f, [it.product_id]: Math.max(0, Math.min(available, parseInt(e.target.value) || 0)) }))}
+                                            className="w-14 text-center text-sm"
+                                            min="0"
+                                            max={available}
+                                          />
+                                          <motion.button
+                                            type="button"
+                                            onClick={() => setTransferForm(f => ({ ...f, [it.product_id]: Math.min(available, (f[it.product_id] || 0) + 1) }))}
+                                            className="btn-outline !px-2 !py-1 text-sm"
+                                            whileTap={{ scale: 0.9 }}
+                                          >+</motion.button>
+                                        </div>
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        );
+                      })()}
+                    </div>
+
+                    <div className="mt-3 p-2.5 rounded-xl bg-white/[0.03] border border-white/[0.06] flex items-center justify-between text-sm">
+                      <span className="text-gray-400">Sending to stall:</span>
+                      <span className="text-gold font-bold text-lg">
+                        {globalStock.reduce((sum, it) => {
+                          const available = parseInt(String(it.quantity)) || 0;
+                          return sum + Math.min(transferForm[it.product_id] ?? 0, available);
+                        }, 0)}
+                      </span>
+                    </div>
+
+                    <div className="flex gap-2 mt-4 pt-3 border-t border-white/[0.06]">
+                      <motion.button
+                        onClick={saveTransfer}
+                        disabled={transferring}
+                        className="btn-gold flex-1 disabled:opacity-50"
+                        whileTap={{ scale: 0.97 }}
+                      >
+                        {transferring ? 'Sending...' : 'Send to Stall'}
+                      </motion.button>
+                      <button onClick={() => setShowTransfer(false)} className="btn-outline flex-1">Cancel</button>
+                    </div>
+                  </>
+                )}
+              </motion.div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
         {/* Stock Summary Modal */}
         <AnimatePresence>
           {showStockSummary && (
@@ -1409,6 +1649,45 @@ export default function SessionView() {
                   </svg>
                   {hasFinalCounts ? 'Edit Final Count' : 'Count Remaining Stock'}
                 </button>
+              </div>
+
+              {/* Central inventory: pull stock onto this stall, or send
+                  leftovers back to the store. */}
+              <div className="mt-2 pt-3 border-t border-white/[0.06] space-y-2">
+                <button
+                  onClick={openTransfer}
+                  className="w-full py-2.5 px-4 rounded-xl text-sm font-semibold transition-all duration-200 flex items-center gap-2 justify-center bg-gold/10 text-gold border border-gold/25 hover:bg-gold/20"
+                >
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M7 16V4m0 0L3 8m4-4l4 4m6 0v12m0 0l4-4m-4 4l-4-4" />
+                  </svg>
+                  Stock from Inventory
+                </button>
+
+                {hasStock && !stockReturned && (
+                  <button
+                    onClick={returnStock}
+                    disabled={returning || remainingUnits <= 0}
+                    className="w-full py-2 px-4 rounded-xl text-xs font-medium transition-all duration-200 flex items-center gap-2 justify-center text-gray-400 border border-white/[0.06] hover:text-gold hover:border-gold/20 disabled:opacity-40 disabled:cursor-not-allowed"
+                    title={remainingUnits <= 0 ? 'No leftover stock to return' : 'Send leftover stock back to your central inventory'}
+                  >
+                    <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M3 10h10a4 4 0 014 4v0a4 4 0 01-4 4H9m-6-8l4-4m-4 4l4 4" />
+                    </svg>
+                    {returning ? 'Returning…' : `Return leftovers to inventory${remainingUnits > 0 ? ` (${remainingUnits})` : ''}`}
+                  </button>
+                )}
+                {stockReturned && (
+                  <p className="text-[11px] text-emerald-400/90 text-center flex items-center justify-center gap-1.5">
+                    <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                    </svg>
+                    Leftovers returned to inventory
+                  </p>
+                )}
+                {returnError && (
+                  <p className="text-[11px] text-red-400 text-center">{returnError}</p>
+                )}
               </div>
             </motion.div>
 

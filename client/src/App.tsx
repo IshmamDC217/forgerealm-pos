@@ -8,6 +8,7 @@ import MobileHeader from './components/layout/MobileHeader';
 import Welcome from './pages/Welcome';
 import SessionView from './pages/SessionView';
 import Products from './pages/Products';
+import Inventory from './pages/Inventory';
 import Login from './pages/Login';
 import OfflineBanner from './components/OfflineBanner';
 
@@ -59,6 +60,7 @@ function AuthenticatedApp() {
               <Route path="/" element={<Welcome />} />
               <Route path="/session/:id" element={<SessionView />} />
               <Route path="/products" element={<Products />} />
+              <Route path="/inventory" element={<Inventory />} />
               <Route path="*" element={<Navigate to="/" replace />} />
             </Routes>
           </AnimatePresence>

@@ -198,6 +198,29 @@ async function migrate(): Promise<void> {
       END $$
     `);
 
+    // Global (central) inventory — the single "current stock" we hold in the
+    // store, independent of any one stall. Creating/stocking a stall draws
+    // units out of here (transfer); leftovers can be returned back in. One row
+    // per product; products with no row are treated as quantity 0. Existing
+    // per-session stock rows are never touched by this — old stalls keep their
+    // own numbers.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS global_stock (
+        product_id UUID PRIMARY KEY REFERENCES products(id) ON DELETE CASCADE,
+        quantity INTEGER NOT NULL DEFAULT 0 CHECK (quantity >= 0),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
+
+    // Marks that a stall's leftover stock has already been returned to the
+    // global pool, so returning twice can't double-credit inventory.
+    await client.query(`
+      DO $$ BEGIN
+        ALTER TABLE sessions ADD COLUMN stock_returned_at TIMESTAMPTZ;
+      EXCEPTION WHEN duplicate_column THEN NULL;
+      END $$
+    `);
+
     await client.query('COMMIT');
     console.log('Migration completed successfully.');
   } catch (err) {

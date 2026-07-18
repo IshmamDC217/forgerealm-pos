@@ -8,7 +8,15 @@ export interface Session {
   card_fee_applied: boolean;
   card_fee_rate: number;
   group_id: string | null;
+  stock_returned_at: string | null;
   created_at: string;
+  updated_at: string;
+}
+
+// Central-store inventory row: units of a product we hold outside any stall.
+export interface GlobalStock {
+  product_id: string;
+  quantity: number;
   updated_at: string;
 }
 
