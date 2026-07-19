@@ -144,11 +144,10 @@ export default function SessionView() {
     return blocks;
   }, [sales]);
 
-  // Cart helpers — adding more than remaining stock is blocked.
+  // Cart helpers. Stock counts are informational only — a sale is never
+  // blocked by them, so you can always sell an item even when it reads as
+  // sold out (the count just goes negative and can be reconciled later).
   const addToCart = (p: Product) => {
-    const stock = stockMap[p.id];
-    const inCart = cart[p.id]?.quantity ?? 0;
-    if (stock && inCart >= stock.remaining) return;
     setCart(prev => {
       const existing = prev[p.id];
       if (existing) {
@@ -935,23 +934,20 @@ export default function SessionView() {
                       {prods.map((p, i) => {
                         const stock = stockMap[p.id];
                         const inCartQty = cart[p.id]?.quantity ?? 0;
-                        const remainingAfterCart = stock ? stock.remaining - inCartQty : Infinity;
-                        const outOfStock = stock && stock.remaining <= 0;
-                        const cantAddMore = remainingAfterCart <= 0;
+                        // Stock is informational only: every product stays fully
+                        // tappable, even at 0, so a sale is never blocked.
                         return (
                           <motion.button
                             key={p.id}
-                            onClick={() => !cantAddMore && addToCart(p)}
+                            onClick={() => addToCart(p)}
                             className={`card-hover text-left relative ${
-                              outOfStock ? 'opacity-40 cursor-not-allowed' : ''
-                            } ${
                               inCartQty > 0 ? 'ring-2 ring-gold/40' : ''
                             }`}
                             initial={{ opacity: 0, scale: 0.95 }}
-                            animate={{ opacity: outOfStock ? 0.4 : 1, scale: 1 }}
+                            animate={{ opacity: 1, scale: 1 }}
                             transition={{ delay: i * 0.04, duration: 0.3 }}
-                            whileHover={cantAddMore ? {} : { scale: 1.02 }}
-                            whileTap={cantAddMore ? {} : { scale: 0.97 }}
+                            whileHover={{ scale: 1.02 }}
+                            whileTap={{ scale: 0.97 }}
                           >
                             {inCartQty > 0 && (
                               <span className="absolute -top-1.5 -right-1.5 z-10 min-w-[20px] h-5 px-1.5 rounded-full bg-gold text-navy text-[11px] font-bold flex items-center justify-center shadow-glow-gold-sm">
