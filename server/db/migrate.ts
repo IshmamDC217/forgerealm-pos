@@ -77,6 +77,13 @@ async function migrate(): Promise<void> {
       `CREATE INDEX IF NOT EXISTS idx_sales_sumup_tx ON sales(sumup_transaction_id)`
     );
 
+    // Allow negative sale quantities so returns/refunds/corrections can be
+    // recorded at checkout. The original constraint only permitted quantity > 0;
+    // replace it with "not zero" (a zero-quantity line carries no meaning).
+    await client.query(`ALTER TABLE sales DROP CONSTRAINT IF EXISTS sales_quantity_check`);
+    await client.query(`ALTER TABLE sales DROP CONSTRAINT IF EXISTS sales_quantity_nonzero`);
+    await client.query(`ALTER TABLE sales ADD CONSTRAINT sales_quantity_nonzero CHECK (quantity <> 0)`);
+
     // Queue of SumUp card transactions we've seen but not yet allocated to
     // products. The poller inserts here; the UI prompts the user to allocate
     // each one, then moves them to the sales table.

@@ -21,8 +21,12 @@ export default function SessionView() {
   const [products, setProducts] = useState<Product[]>([]);
   const [sales, setSales] = useState<Sale[]>([]);
   const [loading, setLoading] = useState(true);
-  // Cart for multi-item checkout: keyed by product_id.
+  // Cart for multi-item checkout: keyed by product_id. Quantities may be
+  // negative to record a return/refund at checkout.
   const [cart, setCart] = useState<Record<string, { quantity: number; price: number }>>({});
+  // Raw text being typed into each cart line's quantity box, so a partial "-"
+  // isn't clobbered by the number formatting while entering a negative.
+  const [qtyDrafts, setQtyDrafts] = useState<Record<string, string>>({});
   const [showCheckout, setShowCheckout] = useState(false);
   const [cartPayment, setCartPayment] = useState<'cash' | 'card'>('cash');
   const [checkoutRecording, setCheckoutRecording] = useState(false);
@@ -112,11 +116,13 @@ export default function SessionView() {
   const cartTotals = useMemo(() => {
     let units = 0;
     let value = 0;
+    let recordable = 0; // lines that will actually post (quantity != 0)
     for (const item of Object.values(cart)) {
       units += item.quantity;
       value += item.quantity * item.price;
+      if (item.quantity !== 0) recordable += 1;
     }
-    return { units, value, lineCount: Object.keys(cart).length };
+    return { units, value, lineCount: Object.keys(cart).length, recordable };
   }, [cart]);
 
   // Group sales by transaction_id while preserving the newest-first order of
@@ -173,13 +179,10 @@ export default function SessionView() {
     });
   };
 
+  // Any integer is allowed, including negatives (a return) and a transient 0
+  // while typing. Removing a line is done with the × button, not by hitting 0.
   const setCartItemQuantity = (productId: string, qty: number) => {
     setCart(prev => {
-      if (qty <= 0) {
-        const next = { ...prev };
-        delete next[productId];
-        return next;
-      }
       const existing = prev[productId];
       if (!existing) return prev;
       return { ...prev, [productId]: { ...existing, quantity: qty } };
@@ -202,11 +205,12 @@ export default function SessionView() {
     });
   };
 
-  const clearCart = () => setCart({});
+  const clearCart = () => { setCart({}); setQtyDrafts({}); };
 
   const checkout = async () => {
     if (!id || checkoutRecording) return;
-    const entries = Object.entries(cart);
+    // Skip any lines left at zero — only non-zero quantities post.
+    const entries = Object.entries(cart).filter(([, item]) => item.quantity !== 0);
     if (entries.length === 0) return;
     setCheckoutRecording(true);
     try {
@@ -259,6 +263,7 @@ export default function SessionView() {
       );
 
       setCart({});
+      setQtyDrafts({});
       setShowCheckout(false);
       setCartPayment('cash');
       refreshSessions();
@@ -1410,11 +1415,25 @@ export default function SessionView() {
                             whileTap={{ scale: 0.9 }}
                           >-</motion.button>
                           <input
-                            type="number"
-                            value={item.quantity}
-                            onChange={e => setCartItemQuantity(pid, Math.max(0, parseInt(e.target.value) || 0))}
-                            className="w-12 text-center text-sm"
-                            min="0"
+                            type="text"
+                            inputMode="numeric"
+                            value={qtyDrafts[pid] ?? String(item.quantity)}
+                            onChange={e => {
+                              const raw = e.target.value;
+                              // Allow an empty box or a lone "-" mid-typing, plus
+                              // any positive/negative integer.
+                              if (raw === '' || raw === '-' || /^-?\d+$/.test(raw)) {
+                                setQtyDrafts(d => ({ ...d, [pid]: raw }));
+                                const v = parseInt(raw, 10);
+                                if (!isNaN(v)) setCartItemQuantity(pid, v);
+                              }
+                            }}
+                            onBlur={() => {
+                              // Drop the draft so the box reflects the committed
+                              // number; an empty/"-" box falls back to the last value.
+                              setQtyDrafts(d => { const n = { ...d }; delete n[pid]; return n; });
+                            }}
+                            className="w-14 text-center text-sm"
                           />
                           <motion.button
                             type="button"
@@ -1494,7 +1513,7 @@ export default function SessionView() {
                 <motion.button
                   type="button"
                   onClick={checkout}
-                  disabled={checkoutRecording || cartTotals.value <= 0}
+                  disabled={checkoutRecording || cartTotals.recordable === 0}
                   className="btn-gold flex-[2] disabled:opacity-50 disabled:cursor-not-allowed"
                   whileTap={{ scale: 0.98 }}
                 >
@@ -1508,7 +1527,7 @@ export default function SessionView() {
                       Recording…
                     </span>
                   ) : (
-                    `Record ${cartTotals.lineCount} sale${cartTotals.lineCount === 1 ? '' : 's'}`
+                    `Record ${cartTotals.recordable} sale${cartTotals.recordable === 1 ? '' : 's'}`
                   )}
                 </motion.button>
               </div>
